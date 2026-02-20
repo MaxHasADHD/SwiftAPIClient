@@ -158,34 +158,6 @@ YourAPIWrapper
 
 See [TraktKit](https://github.com/MaxHasADHD/TraktKit) for a complete example of building an API wrapper with SwiftAPIClient.
 
-## Testing
-
-SwiftAPIClient includes `RequestMocking` for URLProtocol-based mocking:
-
-```swift
-import SwiftAPIClient
-
-// Mock a request
-try RequestMocking.add(
-    mock: .init(
-        urlString: "https://api.example.com/movies",
-        result: .success(mockData),
-        httpCode: 200
-    )
-)
-
-// Enable mocking
-RequestMocking.startInterceptingRequests()
-
-// Your tests...
-
-RequestMocking.stopInterceptingRequests()
-```
-
 ## License
 
 MIT License - see LICENSE file for details
-
-## Credits
-
-Extracted from [TraktKit](https://github.com/MaxHasADHD/TraktKit) by Maximilian Litteral
