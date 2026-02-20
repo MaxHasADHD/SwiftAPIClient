@@ -68,8 +68,8 @@ public actor KeychainAuthentication: APIAuthentication {
         refreshToken = state.refreshToken
 
         // Save to keychain
-        keychainHelper.setString(value: state.accessToken, forKey: accessTokenKey)
-        keychainHelper.setString(value: state.refreshToken, forKey: refreshTokenKey)
+        _ = keychainHelper.setString(value: state.accessToken, forKey: accessTokenKey)
+        _ = keychainHelper.setString(value: state.refreshToken, forKey: refreshTokenKey)
 
         UserDefaults.standard.set(state.expirationDate, forKey: expirationDateKey)
     }
@@ -79,8 +79,8 @@ public actor KeychainAuthentication: APIAuthentication {
         refreshToken = nil
         expirationDate = nil
 
-        keychainHelper.deleteItem(forKey: accessTokenKey)
-        keychainHelper.deleteItem(forKey: refreshTokenKey)
+        _ = keychainHelper.deleteItem(forKey: accessTokenKey)
+        _ = keychainHelper.deleteItem(forKey: refreshTokenKey)
 
         UserDefaults.standard.removeObject(forKey: expirationDateKey)
     }

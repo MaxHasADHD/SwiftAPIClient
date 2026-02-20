@@ -23,9 +23,9 @@ let package = Package(
             path: "Sources/SwiftAPIClient"
         ),
         .testTarget(
-            name: "SwiftAPIClient Tests",
+            name: "SwiftAPIClientTests",
             dependencies: ["SwiftAPIClient"]
         ),
     ],
-    swiftLanguageVersion: .version("6")
+    swiftLanguageModes: [.version("6.0")]
 )

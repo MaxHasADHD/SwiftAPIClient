@@ -41,14 +41,14 @@ public extension Date {
         }
     }
 
-    public func UTCDateString() -> String {
+    func UTCDateString() -> String {
         dateFormatter.timeZone = TimeZone(identifier: "UTC")
         let UTCString = self.dateString(withFormat: "yyyy-MM-dd'T'HH:mm:ss.SSSZ")
         dateFormatter.timeZone = TimeZone.current
         return UTCString
     }
 
-    public func dateString(withFormat format: String) -> String {
+    func dateString(withFormat format: String) -> String {
         ISO8601DateFormatter.dateFormat = format
         return ISO8601DateFormatter.string(from: self)
     }
