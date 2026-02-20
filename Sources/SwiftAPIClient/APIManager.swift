@@ -95,6 +95,16 @@ open class APIManager: @unchecked Sendable {
         }
     }
 
+    /**
+     Updates the cached authentication state directly without reading from storage.
+     Use this when you've just saved credentials and want to immediately update the cache.
+     */
+    public func updateCachedAuthState(_ state: AuthenticationState?) {
+        authStateLock.withLock {
+            cachedAuthState = state
+        }
+    }
+
     public func signOut() async {
         guard let authStorage else { return }
         await authStorage.clear()
