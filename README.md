@@ -26,7 +26,7 @@ Add SwiftAPIClient to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/yourusername/SwiftAPIClient.git", from: "1.0.0")
+    .package(url: "https://github.com/MaxHasADHD/SwiftAPIClient.git", from: "1.0.0")
 ]
 ```
 
