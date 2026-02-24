@@ -5,10 +5,14 @@
 
 import Foundation
 
+/// Core API error type containing standard HTTP errors and retry functionality.
+/// API-specific errors can be handled via custom `ResponseHandler` implementations.
 public enum APIError: LocalizedError, Equatable {
     /// 204. Some methods will succeed but not return any content.
     case noContent
 
+    // MARK: - 4xx Client Errors
+    
     /// Bad Request (400) - request couldn't be parsed
     case badRequest
     /// OAuth must be provided (401)
@@ -16,32 +20,30 @@ public enum APIError: LocalizedError, Equatable {
     /// Forbidden - invalid API key or unapproved app (403)
     case forbidden
     /// Not Found - method exists, but no record found (404)
-    case noRecordFound
+    case notFound
     /// Method Not Found - method doesn't exist (405)
-    case noMethodFound
+    case methodNotAllowed
     /// Conflict - resource already created (409)
-    case resourceAlreadyCreated
+    case conflict
     /// Precondition Failed - use application/json content type (412)
     case preconditionFailed
-    /// Account Limit Exceeded - list count, item count, etc (420)
-    case accountLimitExceeded
     /// Unprocessable Entity - validation errors (422)
     case unprocessableEntity
-    /// Locked User Account - have the user contact support (423)
-    case accountLocked
-    /// VIP Only - user must upgrade to VIP (426)
-    case vipOnly
     /// Rate Limit Exceeded (429) with retry-after header
     case retry(after: TimeInterval)
     /// Rate Limit Exceeded, retry interval not available (429)
     case rateLimitExceeded(HTTPURLResponse)
+    
+    // MARK: - 5xx Server Errors
+    
     /// Server Error - please open a support ticket (500)
     case serverError
     /// Service Unavailable - server overloaded (try again in 30s) (502 / 503 / 504)
-    case serverOverloaded
-    /// Service Unavailable - Cloudflare error (520 / 521 / 522)
-    case cloudflareError
-    /// Full url response
+    case serviceUnavailable
+    
+    // MARK: - Unhandled
+    
+    /// Full url response for completely unhandled cases
     case unhandled(URLResponse)
 
     public var errorDescription: String? {
@@ -54,34 +56,50 @@ public enum APIError: LocalizedError, Equatable {
             "Unauthorized. Please sign in."
         case .forbidden:
             "Forbidden. Invalid API key or unapproved app."
-        case .noRecordFound:
+        case .notFound:
             "No record found."
-        case .noMethodFound:
-            "Method not found."
-        case .resourceAlreadyCreated:
+        case .methodNotAllowed:
+            "Method not allowed."
+        case .conflict:
             "Resource has already been created."
         case .preconditionFailed:
             "Invalid content type."
-        case .accountLimitExceeded:
-            "Account limit exceeded."
         case .unprocessableEntity:
             "Invalid entity."
-        case .accountLocked:
-            "This account is locked. Please contact support."
-        case .vipOnly:
-            "This feature is VIP only."
         case .retry:
             nil
         case .rateLimitExceeded:
             "Rate limit exceeded. Please try again in a minute."
-        case .serverError, .serverOverloaded, .cloudflareError:
-            "Server is down. Please try again later."
+        case .serverError:
+            "Server error. Please try again later."
+        case .serviceUnavailable:
+            "Service unavailable. Please try again later."
         case .unhandled(let urlResponse):
             if let httpResponse = urlResponse as? HTTPURLResponse {
                 "Unhandled response. Status code \(httpResponse.statusCode)"
             } else {
                 "Unhandled response. \(urlResponse.description)"
             }
+        }
+    }
+    
+    /// The HTTP status code associated with this error, if available
+    public var statusCode: Int? {
+        switch self {
+        case .noContent: return 204
+        case .badRequest: return 400
+        case .unauthorized: return 401
+        case .forbidden: return 403
+        case .notFound: return 404
+        case .methodNotAllowed: return 405
+        case .conflict: return 409
+        case .preconditionFailed: return 412
+        case .unprocessableEntity: return 422
+        case .retry, .rateLimitExceeded: return 429
+        case .serverError: return 500
+        case .serviceUnavailable: return 503
+        case .unhandled(let response):
+            return (response as? HTTPURLResponse)?.statusCode
         }
     }
 }

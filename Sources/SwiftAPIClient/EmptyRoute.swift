@@ -8,7 +8,7 @@ import Foundation
 // MARK: - No data response
 
 public struct EmptyRoute: Sendable {
-    private let apiManager: APIManager
+    private let apiClient: APIClient
 
     public var path: String
     public let method: Method
@@ -25,14 +25,14 @@ public struct EmptyRoute: Sendable {
         body: (any Encodable & Hashable & Sendable)? = nil,
         method: Method,
         requiresAuthentication: Bool = false,
-        apiManager: APIManager
+        apiClient: APIClient
     ) {
         self.path = path
         self.queryItems = queryItems
         self.body = body
         self.method = method
         self.requiresAuthentication = requiresAuthentication
-        self.apiManager = apiManager
+        self.apiClient = apiClient
     }
 
     public init(
@@ -41,26 +41,26 @@ public struct EmptyRoute: Sendable {
         body: (any Encodable & Hashable & Sendable)? = nil,
         method: Method,
         requiresAuthentication: Bool = false,
-        apiManager: APIManager
+        apiClient: APIClient
     ) {
         self.path = paths.compactMap { $0?.description }.joined(separator: "/")
         self.queryItems = queryItems
         self.body = body
         self.method = method
         self.requiresAuthentication = requiresAuthentication
-        self.apiManager = apiManager
+        self.apiClient = apiClient
     }
 
     // MARK: - Perform
 
     public func perform(retryLimit: Int = 3) async throws {
-        let request = try apiManager.mutableRequest(
+        let request = try apiClient.mutableRequest(
             forPath: path,
             withQuery: queryItems,
             isAuthorized: requiresAuthentication,
             withHTTPMethod: method,
             body: body
         )
-        let _ = try await apiManager.fetchData(request: request, retryLimit: retryLimit)
+        let _ = try await apiClient.fetchData(request: request, retryLimit: retryLimit)
     }
 }

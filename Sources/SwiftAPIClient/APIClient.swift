@@ -1,13 +1,13 @@
 //
-//  APIManager.swift
+//  APIClient.swift
 //  SwiftAPIClient
 //
 
 import Foundation
 import os
 
-/// A generic API manager that can be configured for any REST API.
-open class APIManager: @unchecked Sendable {
+/// A generic API client that can be configured for any REST API.
+open class APIClient: @unchecked Sendable {
 
     // MARK: - Configuration
 
@@ -16,17 +16,20 @@ open class APIManager: @unchecked Sendable {
         public let additionalHeaders: [String: String]
         public let paginationPageHeader: String
         public let paginationPageCountHeader: String
+        public let responseHandler: any ResponseHandler
 
         public init(
             baseURL: URL,
             additionalHeaders: [String: String] = [:],
             paginationPageHeader: String = "x-pagination-page",
-            paginationPageCountHeader: String = "x-pagination-page-count"
+            paginationPageCountHeader: String = "x-pagination-page-count",
+            responseHandler: any ResponseHandler = DefaultResponseHandler()
         ) {
             self.baseURL = baseURL
             self.additionalHeaders = additionalHeaders
             self.paginationPageHeader = paginationPageHeader
             self.paginationPageCountHeader = paginationPageCountHeader
+            self.responseHandler = responseHandler
         }
     }
 
@@ -47,7 +50,7 @@ open class APIManager: @unchecked Sendable {
         return encoder
     }()
 
-    static let logger = Logger(subsystem: "SwiftAPIClient", category: "APIManager")
+    static let logger = Logger(subsystem: "SwiftAPIClient", category: "APIClient")
 
     // MARK: - Lifecycle
 
@@ -59,18 +62,6 @@ open class APIManager: @unchecked Sendable {
         self.configuration = configuration
         self.session = session
         self.authStorage = authStorage
-    }
-
-    public init(
-        configuration: Configuration,
-        session: URLSession = URLSession(configuration: .default),
-        authStorage: (any APIAuthentication)? = nil
-    ) async {
-        self.configuration = configuration
-        self.session = session
-        self.authStorage = authStorage
-
-        try? await refreshCurrentAuthState()
     }
 
     // MARK: - Authentication
@@ -85,7 +76,7 @@ open class APIManager: @unchecked Sendable {
 
     /**
      Gets the current authentication state from the authentication storage, and caches the result to make requests.
-     You should only have to call this once shortly after initializing the `APIManager`, unless you use the async initializer, which calls this function automatically.
+     You should call this once shortly after initializing the `APIClient` if you provided an `authStorage`.
      */
     public func refreshCurrentAuthState() async throws(AuthenticationError) {
         guard let authStorage else { throw .noStoredCredentials }
@@ -124,7 +115,7 @@ open class APIManager: @unchecked Sendable {
     ) throws -> URLRequest {
         // Build URL
         guard var components = URLComponents(url: configuration.baseURL, resolvingAgainstBaseURL: false) else {
-            throw APIManagerError.malformedURL
+            throw APIClientError.malformedURL
         }
 
         // Append path to base URL
@@ -142,7 +133,7 @@ open class APIManager: @unchecked Sendable {
             components.queryItems = queryItems
         }
 
-        guard let url = components.url else { throw APIManagerError.malformedURL }
+        guard let url = components.url else { throw APIClientError.malformedURL }
 
         // Request
         var request = URLRequest(url: url)
@@ -160,7 +151,7 @@ open class APIManager: @unchecked Sendable {
             if let accessToken = cachedAuthState?.accessToken {
                 request.addValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
             } else {
-                throw APIManagerError.userNotAuthorized
+                throw APIClientError.userNotAuthorized
             }
         }
 
@@ -174,47 +165,17 @@ open class APIManager: @unchecked Sendable {
 
     // MARK: - Error Handling
 
-    private func handleResponse(response: URLResponse?) throws(APIError) {
-        guard let response else { return }
-        guard let httpResponse = response as? HTTPURLResponse else { throw .unhandled(response) }
-
-        guard 200...299 ~= httpResponse.statusCode else {
-            switch httpResponse.statusCode {
-            case 400: throw .badRequest
-            case 401: throw .unauthorized
-            case 403: throw .forbidden
-            case 404: throw .noRecordFound
-            case 405: throw .noMethodFound
-            case 409: throw .resourceAlreadyCreated
-            case 412: throw .preconditionFailed
-            case 420: throw .accountLimitExceeded
-            case 422: throw .unprocessableEntity
-            case 423: throw .accountLocked
-            case 426: throw .vipOnly
-            case 429:
-                let rawRetryAfter = httpResponse.allHeaderFields["retry-after"]
-                if let retryAfterString = rawRetryAfter as? String,
-                   let retryAfter = TimeInterval(retryAfterString) {
-                    throw .retry(after: retryAfter)
-                } else if let retryAfter = rawRetryAfter as? TimeInterval {
-                    throw .retry(after: retryAfter)
-                } else {
-                    throw .rateLimitExceeded(httpResponse)
-                }
-            case 500: throw .serverError
-            // Try again in 30 seconds
-            case 502, 503, 504: throw .serverOverloaded
-            case 500...600: throw .cloudflareError
-            default:
-                throw .unhandled(httpResponse)
-            }
-        }
+    private func handleResponse(response: URLResponse?) throws {
+        try configuration.responseHandler.handleResponse(response)
     }
 
     // MARK: - Perform Requests
 
     /**
      Downloads the contents of a URL based on the specified URL request. Handles ``APIError/retry(after:)`` up to the specified `retryLimit`
+     
+     - Note: This method can throw any error type defined by your `ResponseHandler`. The automatic retry functionality
+             only applies to `APIError.retry(after:)` errors.
      */
     public func fetchData(request: URLRequest, retryLimit: Int = 3) async throws -> (Data, URLResponse) {
         var retryCount = 0
@@ -225,6 +186,7 @@ open class APIManager: @unchecked Sendable {
                 try handleResponse(response: response)
                 return (data, response)
             } catch let error as APIError {
+                // Handle APIError retry logic
                 switch error {
                 case .retry(let retryDelay):
                     retryCount += 1
@@ -238,6 +200,7 @@ open class APIManager: @unchecked Sendable {
                     throw error
                 }
             } catch {
+                // For non-APIError types (custom errors from ResponseHandler), throw immediately
                 throw error
             }
         }
@@ -273,7 +236,7 @@ open class APIManager: @unchecked Sendable {
 
 // MARK: - Errors
 
-public enum APIManagerError: Error {
+public enum APIClientError: Error {
     case malformedURL
     case userNotAuthorized
     case couldNotParseData

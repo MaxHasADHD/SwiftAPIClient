@@ -10,7 +10,7 @@ public struct Route<T: Codable & Hashable & Sendable>: Sendable {
     // MARK: - Properties
 
     private let resultType: T.Type
-    private let apiManager: APIManager
+    private let apiClient: APIClient
 
     public var path: String
     public let method: Method
@@ -31,7 +31,7 @@ public struct Route<T: Codable & Hashable & Sendable>: Sendable {
         method: Method,
         requiresAuthentication: Bool = false,
         resultType: T.Type = T.self,
-        apiManager: APIManager
+        apiClient: APIClient
     ) {
         self.path = path
         self.queryItems = queryItems
@@ -39,7 +39,7 @@ public struct Route<T: Codable & Hashable & Sendable>: Sendable {
         self.method = method
         self.requiresAuthentication = requiresAuthentication
         self.resultType = resultType
-        self.apiManager = apiManager
+        self.apiClient = apiClient
     }
 
     public init(
@@ -49,7 +49,7 @@ public struct Route<T: Codable & Hashable & Sendable>: Sendable {
         method: Method,
         requiresAuthentication: Bool = false,
         resultType: T.Type = T.self,
-        apiManager: APIManager
+        apiClient: APIClient
     ) {
         self.path = paths.compactMap { $0?.description }.joined(separator: "/")
         self.queryItems = queryItems
@@ -57,7 +57,7 @@ public struct Route<T: Codable & Hashable & Sendable>: Sendable {
         self.method = method
         self.requiresAuthentication = requiresAuthentication
         self.resultType = resultType
-        self.apiManager = apiManager
+        self.apiClient = apiClient
     }
 
     // MARK: - Pagination
@@ -78,7 +78,7 @@ public struct Route<T: Codable & Hashable & Sendable>: Sendable {
 
     public func perform(retryLimit: Int = 3) async throws -> T {
         let request = try createRequest()
-        return try await apiManager.perform(request: request, retryLimit: retryLimit)
+        return try await apiClient.perform(request: request, retryLimit: retryLimit)
     }
 
     private func createRequest() throws -> URLRequest {
@@ -93,7 +93,7 @@ public struct Route<T: Codable & Hashable & Sendable>: Sendable {
             query["limit"] = limit.description
         }
 
-        return try apiManager.mutableRequest(
+        return try apiClient.mutableRequest(
             forPath: path,
             withQuery: query,
             isAuthorized: requiresAuthentication,
