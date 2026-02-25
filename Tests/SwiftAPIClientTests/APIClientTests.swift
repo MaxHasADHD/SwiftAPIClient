@@ -43,7 +43,7 @@ struct TestResponseHandler: ResponseHandler {
 
 // MARK: - Tests
 
-@Suite("APIClient Request Tests", .serialized)
+@Suite("APIClient Request Tests")
 struct APIClientRequestTests {
     
     let baseURL = URL(string: "https://api.example.com")!
@@ -174,7 +174,7 @@ struct APIClientRequestTests {
     }
 }
 
-@Suite("APIClient Custom Handler Tests", .serialized)
+@Suite("APIClient Custom Handler Tests")
 struct APIClientCustomHandlerTests {
     
     let baseURL = URL(string: "https://api.example.com")!
@@ -251,7 +251,7 @@ struct APIClientCustomHandlerTests {
     }
 }
 
-@Suite("APIClient Retry Tests", .serialized)
+@Suite("APIClient Retry Tests")
 struct APIClientRetryTests {
     
     let baseURL = URL(string: "https://api.example.com")!
@@ -423,6 +423,29 @@ struct APIClientConfigurationTests {
         #expect(request.value(forHTTPHeaderField: "X-Client-ID") == "test-client")
     }
     
+    @Test("Uses custom date decoding strategy")
+    func customDateDecodingStrategy() throws {
+        let baseURL = URL(string: "https://api.example.com")!
+
+        // Test with default custom strategy
+        let defaultConfiguration = APIClient.Configuration(baseURL: baseURL)
+        #expect(defaultConfiguration.baseURL == baseURL)
+
+        // Test with ISO8601 strategy
+        let iso8601Configuration = APIClient.Configuration(
+            baseURL: baseURL,
+            dateDecodingStrategy: .iso8601
+        )
+        #expect(iso8601Configuration.baseURL == baseURL)
+
+        // Test with milliseconds since reference date strategy
+        let millisecondsConfiguration = APIClient.Configuration(
+            baseURL: baseURL,
+            dateDecodingStrategy: .millisecondsSince1970
+        )
+        #expect(millisecondsConfiguration.baseURL == baseURL)
+    }
+
     @Test("Uses custom response handler")
     func customResponseHandler() {
         let baseURL = URL(string: "https://api.example.com")!
@@ -431,7 +454,7 @@ struct APIClientConfigurationTests {
             baseURL: baseURL,
             responseHandler: customHandler
         )
-        
+
         // Verify the configuration was accepted
         #expect(configuration.baseURL == baseURL)
     }
