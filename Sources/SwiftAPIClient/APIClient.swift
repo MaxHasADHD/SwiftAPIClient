@@ -17,19 +17,22 @@ open class APIClient: @unchecked Sendable {
         public let paginationPageHeader: String
         public let paginationPageCountHeader: String
         public let responseHandler: any ResponseHandler
+        public let dateDecodingStrategy: JSONDecoder.DateDecodingStrategy
 
         public init(
             baseURL: URL,
             additionalHeaders: [String: String] = [:],
             paginationPageHeader: String = "x-pagination-page",
             paginationPageCountHeader: String = "x-pagination-page-count",
-            responseHandler: any ResponseHandler = DefaultResponseHandler()
+            responseHandler: any ResponseHandler = DefaultResponseHandler(),
+            dateDecodingStrategy: JSONDecoder.DateDecodingStrategy = .custom(customDateDecodingStrategy)
         ) {
             self.baseURL = baseURL
             self.additionalHeaders = additionalHeaders
             self.paginationPageHeader = paginationPageHeader
             self.paginationPageCountHeader = paginationPageCountHeader
             self.responseHandler = responseHandler
+            self.dateDecodingStrategy = dateDecodingStrategy
         }
     }
 
@@ -217,7 +220,7 @@ open class APIClient: @unchecked Sendable {
     /// Decodes data into an API object. If the object type is `PagedObject` the headers will be extracted from the response.
     private func decodeObject<T: Codable & Hashable & Sendable>(from data: Data, response: URLResponse) throws -> T {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .custom(customDateDecodingStrategy)
+        decoder.dateDecodingStrategy = configuration.dateDecodingStrategy
 
         if let pagedType = T.self as? PagedObjectProtocol.Type {
             let decodedItems = try decoder.decode(pagedType.objectType, from: data)
