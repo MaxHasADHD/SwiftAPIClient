@@ -775,4 +775,89 @@ struct TokenRefreshTests {
         // If we get here without timeout, the deadlock is fixed!
         #expect(result.id == "123")
     }
+    
+    @Test("No deadlock when refresh endpoint returns 401", .timeLimit(.minutes(1)))
+    func noDeadlockWhenRefreshEndpointReturns401() async throws {
+        // Setup mock session
+        let mockSession = MockSession()
+        let testUser = TestUser(id: "123", name: "Test User")
+        let userData = try JSONEncoder().encode(testUser)
+        
+        // Mock for the user request (authenticated)
+        let userMock = try RequestMocking.MockedResponse(
+            urlString: "https://api.example.com/users/me",
+            result: .success(userData),
+            httpCode: 200
+        )
+        await mockSession.add(mock: userMock)
+        
+        // Mock for the token refresh endpoint - returns 401 (invalid refresh token)
+        let tokenMock = try RequestMocking.MockedResponse(
+            urlString: "https://api.example.com/oauth/token",
+            result: .success(Data()),
+            httpCode: 401 // Refresh token is invalid!
+        )
+        await mockSession.add(mock: tokenMock)
+        
+        // Setup auth storage with token expiring soon
+        let authStorage = MockAuthStorage()
+        let expiringState = AuthenticationState(
+            accessToken: "old_access_token",
+            refreshToken: "invalid_refresh_token",
+            expirationDate: Date().addingTimeInterval(120) // 2 minutes from now
+        )
+        await authStorage.updateState(expiringState)
+        
+        // Create a token refresh handler that uses client.perform() for refresh
+        actor RealWorldTokenRefreshHandler: TokenRefreshHandler {
+            func refreshToken(using refreshToken: String, client: APIClient) async throws -> AuthenticationState {
+                let request = try client.mutableRequest(
+                    forPath: "oauth/token",
+                    isAuthorized: false, // Unauthenticated request!
+                    withHTTPMethod: .POST
+                )
+                
+                // This will get a 401 - should NOT trigger another refresh attempt (deadlock)
+                let response: TokenResponse = try await client.perform(request: request)
+                
+                return AuthenticationState(
+                    accessToken: response.accessToken,
+                    refreshToken: response.refreshToken,
+                    expirationDate: Date().addingTimeInterval(TimeInterval(response.expiresIn))
+                )
+            }
+        }
+        
+        let refreshHandler = RealWorldTokenRefreshHandler()
+        
+        // Create client with refresh handler
+        let configuration = APIClient.Configuration(
+            baseURL: baseURL,
+            tokenRefreshHandler: refreshHandler
+        )
+        let client = APIClient(
+            configuration: configuration,
+            session: mockSession.urlSession,
+            authStorage: authStorage
+        )
+        
+        try await client.refreshCurrentAuthState()
+        
+        // Make an authenticated request - will trigger proactive refresh
+        let request = try client.mutableRequest(
+            forPath: "users/me",
+            isAuthorized: true,
+            withHTTPMethod: .GET
+        )
+        
+        // This should NOT deadlock - should fail with 401 error
+        do {
+            let _: TestUser = try await client.perform(request: request)
+            Issue.record("Expected 401 error to be thrown")
+        } catch APIError.unauthorized {
+            // Expected - refresh endpoint returned 401
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
 }

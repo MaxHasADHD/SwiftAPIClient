@@ -282,8 +282,15 @@ open class APIClient: @unchecked Sendable {
                     try await Task.sleep(for: .seconds(retryDelay))
                     try Task.checkCancellation()
                 case .unauthorized:
-                    // Try to refresh token once if we have a refresh handler
-                    if !tokenRefreshAttempted, configuration.tokenRefreshHandler != nil, authStorage != nil {
+                    // Only attempt token refresh for authenticated requests
+                    // Unauthenticated requests getting 401 should just fail immediately
+                    // This prevents deadlock when refresh handler's request gets 401
+                    let isAuthenticatedRequest = currentRequest.value(forHTTPHeaderField: "Authorization") != nil
+                    
+                    if isAuthenticatedRequest, 
+                       !tokenRefreshAttempted, 
+                       configuration.tokenRefreshHandler != nil, 
+                       authStorage != nil {
                         tokenRefreshAttempted = true
                         Self.logger.info("Received 401, attempting token refresh")
                         do {
