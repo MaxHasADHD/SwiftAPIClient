@@ -318,14 +318,16 @@ open class APIClient: @unchecked Sendable {
     public func perform<T: Codable & Hashable & Sendable>(request: URLRequest, retryLimit: Int = 3) async throws -> T {
         var finalRequest = request
         
-        // Check if token needs proactive refresh before making the request
-        if shouldRefreshToken() {
+        // Only check for token refresh if this is an authenticated request
+        // This prevents deadlock when the refresh handler uses client.perform() for unauthenticated requests
+        let isAuthenticatedRequest = request.value(forHTTPHeaderField: "Authorization") != nil
+        
+        if isAuthenticatedRequest && shouldRefreshToken() {
             Self.logger.info("Token expires soon, proactively refreshing")
             try await performTokenRefresh()
             
-            // Update the Authorization header with the new token if this is an authorized request
-            if request.value(forHTTPHeaderField: "Authorization") != nil,
-               let newAccessToken = authStateLock.withLock({ cachedAuthState?.accessToken }) {
+            // Update the Authorization header with the new token
+            if let newAccessToken = authStateLock.withLock({ cachedAuthState?.accessToken }) {
                 finalRequest.setValue("Bearer \(newAccessToken)", forHTTPHeaderField: "Authorization")
             }
         }
