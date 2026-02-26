@@ -32,3 +32,15 @@ public protocol APIAuthentication: Sendable {
     /// Delete the data
     func clear() async
 }
+
+/// Protocol for handling token refresh operations.
+/// Implement this protocol to define how your API handles refreshing expired or expiring access tokens.
+public protocol TokenRefreshHandler: Sendable {
+    /// Refreshes the access token using the provided refresh token.
+    /// - Parameters:
+    ///   - refreshToken: The refresh token to use for obtaining a new access token
+    ///   - client: The APIClient instance to use for making the refresh request
+    /// - Returns: A new AuthenticationState with updated tokens
+    /// - Throws: Any error if the refresh fails
+    func refreshToken(using refreshToken: String, client: APIClient) async throws -> AuthenticationState
+}

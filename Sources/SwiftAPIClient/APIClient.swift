@@ -18,6 +18,8 @@ open class APIClient: @unchecked Sendable {
         public let paginationPageCountHeader: String
         public let responseHandler: any ResponseHandler
         public let dateDecodingStrategy: JSONDecoder.DateDecodingStrategy
+        public let tokenRefreshHandler: (any TokenRefreshHandler)?
+        public let tokenRefreshThreshold: TimeInterval
 
         public init(
             baseURL: URL,
@@ -25,7 +27,9 @@ open class APIClient: @unchecked Sendable {
             paginationPageHeader: String = "x-pagination-page",
             paginationPageCountHeader: String = "x-pagination-page-count",
             responseHandler: any ResponseHandler = DefaultResponseHandler(),
-            dateDecodingStrategy: JSONDecoder.DateDecodingStrategy = .custom(customDateDecodingStrategy)
+            dateDecodingStrategy: JSONDecoder.DateDecodingStrategy = .custom(customDateDecodingStrategy),
+            tokenRefreshHandler: (any TokenRefreshHandler)? = nil,
+            tokenRefreshThreshold: TimeInterval = 300
         ) {
             self.baseURL = baseURL
             self.additionalHeaders = additionalHeaders
@@ -33,6 +37,8 @@ open class APIClient: @unchecked Sendable {
             self.paginationPageCountHeader = paginationPageCountHeader
             self.responseHandler = responseHandler
             self.dateDecodingStrategy = dateDecodingStrategy
+            self.tokenRefreshHandler = tokenRefreshHandler
+            self.tokenRefreshThreshold = tokenRefreshThreshold
         }
     }
 
@@ -46,6 +52,10 @@ open class APIClient: @unchecked Sendable {
     private let authStateLock = NSLock()
     nonisolated(unsafe)
     private var cachedAuthState: AuthenticationState?
+    
+    private let tokenRefreshLock = NSLock()
+    nonisolated(unsafe)
+    private var ongoingTokenRefreshTask: Task<Void, Error>?
 
     internal static let jsonEncoder: JSONEncoder = {
         let encoder = JSONEncoder()
@@ -105,6 +115,76 @@ open class APIClient: @unchecked Sendable {
         authStateLock.withLock {
             cachedAuthState = nil
         }
+    }
+
+    /**
+     Checks if the current token needs to be refreshed based on expiration time.
+     Returns true if the token will expire within the configured threshold.
+     */
+    private func shouldRefreshToken() -> Bool {
+        guard let state = authStateLock.withLock({ cachedAuthState }) else {
+            return false
+        }
+
+        let timeUntilExpiration = state.expirationDate.timeIntervalSinceNow
+        return timeUntilExpiration <= configuration.tokenRefreshThreshold
+    }
+
+    /**
+     Performs a token refresh using the configured TokenRefreshHandler.
+     Updates both the auth storage and cached state with the new tokens.
+     Serializes concurrent refresh attempts to prevent duplicate refreshes.
+     */
+    private func performTokenRefresh() async throws {
+        // Atomically check if a refresh is in progress and create/store task if not
+        let (refreshTask, isNewTask) = tokenRefreshLock.withLock { () -> (Task<Void, Error>, Bool) in
+            // If a refresh is already in progress, return the existing task
+            if let existingTask = ongoingTokenRefreshTask {
+                Self.logger.info("Token refresh already in progress, waiting...")
+                return (existingTask, false)
+            }
+            
+            // Create a new refresh task
+            let newTask = Task { @Sendable in
+                guard let authStorage,
+                      let refreshHandler = configuration.tokenRefreshHandler,
+                      let currentState = authStateLock.withLock({ cachedAuthState }) else {
+                    throw APIError.unauthorized
+                }
+
+                Self.logger.info("Refreshing access token")
+
+                // Call the refresh handler to get new tokens
+                let newState = try await refreshHandler.refreshToken(
+                    using: currentState.refreshToken,
+                    client: self
+                )
+
+                // Update storage and cache
+                await authStorage.updateState(newState)
+                authStateLock.withLock {
+                    cachedAuthState = newState
+                }
+
+                Self.logger.info("Token refresh successful")
+            }
+            
+            // Store the new task atomically
+            ongoingTokenRefreshTask = newTask
+            return (newTask, true)
+        }
+        
+        // Execute the task (either existing or newly created)
+        defer {
+            // Clean up only if we created this task
+            if isNewTask {
+                tokenRefreshLock.withLock {
+                    ongoingTokenRefreshTask = nil
+                }
+            }
+        }
+        
+        try await refreshTask.value
     }
 
     // MARK: - Request Building
@@ -178,14 +258,16 @@ open class APIClient: @unchecked Sendable {
      Downloads the contents of a URL based on the specified URL request. Handles ``APIError/retry(after:)`` up to the specified `retryLimit`
      
      - Note: This method can throw any error type defined by your `ResponseHandler`. The automatic retry functionality
-             only applies to `APIError.retry(after:)` errors.
+             only applies to `APIError.retry(after:)` errors and automatic token refresh for 401 errors.
      */
     public func fetchData(request: URLRequest, retryLimit: Int = 3) async throws -> (Data, URLResponse) {
         var retryCount = 0
+        var tokenRefreshAttempted = false
+        var currentRequest = request
 
         while true {
             do {
-                let (data, response) = try await session.data(for: request)
+                let (data, response) = try await session.data(for: currentRequest)
                 try handleResponse(response: response)
                 return (data, response)
             } catch let error as APIError {
@@ -199,6 +281,26 @@ open class APIClient: @unchecked Sendable {
                     Self.logger.info("Retrying after delay: \(retryDelay)")
                     try await Task.sleep(for: .seconds(retryDelay))
                     try Task.checkCancellation()
+                case .unauthorized:
+                    // Try to refresh token once if we have a refresh handler
+                    if !tokenRefreshAttempted, configuration.tokenRefreshHandler != nil, authStorage != nil {
+                        tokenRefreshAttempted = true
+                        Self.logger.info("Received 401, attempting token refresh")
+                        do {
+                            try await performTokenRefresh()
+                            // Update the Authorization header with the new token
+                            if let newAccessToken = authStateLock.withLock({ cachedAuthState?.accessToken }) {
+                                currentRequest.setValue("Bearer \(newAccessToken)", forHTTPHeaderField: "Authorization")
+                            }
+                            // Retry the request with the new token
+                            continue
+                        } catch {
+                            Self.logger.error("Token refresh failed: \(error)")
+                            throw error
+                        }
+                    } else {
+                        throw error
+                    }
                 default:
                     throw error
                 }
@@ -210,10 +312,25 @@ open class APIClient: @unchecked Sendable {
     }
 
     /**
-     Downloads the contents of a URL based on the specified URL request, and decodes the data into an API object
+     Downloads the contents of a URL based on the specified URL request, and decodes the data into an API object.
+     Proactively refreshes tokens if they are about to expire before making the request.
      */
     public func perform<T: Codable & Hashable & Sendable>(request: URLRequest, retryLimit: Int = 3) async throws -> T {
-        let (data, response) = try await fetchData(request: request, retryLimit: retryLimit)
+        var finalRequest = request
+        
+        // Check if token needs proactive refresh before making the request
+        if shouldRefreshToken() {
+            Self.logger.info("Token expires soon, proactively refreshing")
+            try await performTokenRefresh()
+            
+            // Update the Authorization header with the new token if this is an authorized request
+            if request.value(forHTTPHeaderField: "Authorization") != nil,
+               let newAccessToken = authStateLock.withLock({ cachedAuthState?.accessToken }) {
+                finalRequest.setValue("Bearer \(newAccessToken)", forHTTPHeaderField: "Authorization")
+            }
+        }
+
+        let (data, response) = try await fetchData(request: finalRequest, retryLimit: retryLimit)
         return try decodeObject(from: data, response: response)
     }
 
