@@ -27,5 +27,5 @@ let package = Package(
             dependencies: ["SwiftAPIClient"]
         ),
     ],
-    swiftLanguageModes: [.version("6.0")]
+    swiftLanguageModes: [.v6]
 )
