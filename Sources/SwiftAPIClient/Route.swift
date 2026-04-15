@@ -136,7 +136,7 @@ actor AsyncSemaphore {
 extension Route where T: PagedObjectProtocol {
 
     /// Fetches all pages for a paginated endpoint, and returns the data in a Set.
-    public func fetchAllPages<Element>(maxConcurrentRequests preferredMaxConcurrentRequests: Int = 10) async throws -> Set<Element> where T.Type == PagedObject<[Element]>.Type {
+    public func fetchAllPages<Element>(maxConcurrentRequests preferredMaxConcurrentRequests: Int = 5) async throws -> Set<Element> where T.Type == PagedObject<[Element]>.Type {
         // Fetch first page
         let firstPage = try await self.page(1).perform()
         var resultSet = Set<Element>(firstPage.object)
@@ -182,7 +182,7 @@ extension Route where T: PagedObjectProtocol {
     }
 
     /// Stream paged results one at a time
-    public func pagedResults<Element>(maxConcurrentRequests preferredMaxConcurrentRequests: Int = 10) -> AsyncThrowingStream<[Element], Error> where T.Type == PagedObject<[Element]>.Type {
+    public func pagedResults<Element>(maxConcurrentRequests preferredMaxConcurrentRequests: Int = 5) -> AsyncThrowingStream<[Element], Error> where T.Type == PagedObject<[Element]>.Type {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
