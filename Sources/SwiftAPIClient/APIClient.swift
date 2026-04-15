@@ -278,8 +278,12 @@ open class APIClient: @unchecked Sendable {
                     if retryCount >= retryLimit {
                         throw error
                     }
-                    Self.logger.info("Retrying after delay: \(retryDelay)")
-                    try await Task.sleep(for: .seconds(retryDelay))
+                    // Add jitter to prevent thundering herd when multiple
+                    // concurrent requests all receive 429 simultaneously
+                    let jitter = TimeInterval.random(in: 0...30)
+                    let actualDelay = retryDelay + jitter
+                    Self.logger.info("Retrying after delay: \(actualDelay) (base: \(retryDelay), jitter: \(jitter))")
+                    try await Task.sleep(for: .seconds(actualDelay))
                     try Task.checkCancellation()
                 case .unauthorized:
                     // Only attempt token refresh for authenticated requests
