@@ -66,6 +66,7 @@ public actor KeychainAuthentication: APIAuthentication {
         // Keep in memory
         accessToken = state.accessToken
         refreshToken = state.refreshToken
+        expirationDate = state.expirationDate
 
         // Save to keychain
         _ = keychainHelper.setString(value: state.accessToken, forKey: accessTokenKey)
