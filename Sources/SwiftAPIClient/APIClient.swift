@@ -18,7 +18,16 @@ open class APIClient: @unchecked Sendable {
         public let paginationPageCountHeader: String
         public let responseHandler: any ResponseHandler
         public let dateDecodingStrategy: JSONDecoder.DateDecodingStrategy
+
+        /// - Note: As of the introduction of `AuthCoordinator`, this field is only
+        ///   consulted by the deprecated `init(configuration:session:authStorage:)`.
+        ///   New code should construct an `AuthCoordinator` with its own refresh
+        ///   handler and pass it to the `init(configuration:session:authCoordinator:)`.
         public let tokenRefreshHandler: (any TokenRefreshHandler)?
+
+        /// - Note: As of the introduction of `AuthCoordinator`, this field is only
+        ///   consulted by the deprecated `init(configuration:session:authStorage:)`.
+        ///   New code should set the threshold on `AuthCoordinator` directly.
         public let tokenRefreshThreshold: TimeInterval
 
         public init(
@@ -47,15 +56,15 @@ open class APIClient: @unchecked Sendable {
     public let configuration: Configuration
     public let session: URLSession
 
-    private let authStorage: (any APIAuthentication)?
-
-    private let authStateLock = NSLock()
-    nonisolated(unsafe)
-    private var cachedAuthState: AuthenticationState?
-    
-    private let tokenRefreshLock = NSLock()
-    nonisolated(unsafe)
-    private var ongoingTokenRefreshTask: Task<Void, Error>?
+    /// Coordinates auth state (cache + refresh) for this client. Optional —
+    /// clients that only hit unauthenticated endpoints can omit it.
+    ///
+    /// Multiple `APIClient` instances may share a single `AuthCoordinator`
+    /// (typical use case: one logical API exposed over two `URLSession`s for
+    /// network-resource isolation). When shared, refresh requests across all
+    /// clients are coalesced into a single in-flight handler invocation, and
+    /// auth state updates are observed by all of them.
+    public let authCoordinator: AuthCoordinator?
 
     internal static let jsonEncoder: JSONEncoder = {
         let encoder = JSONEncoder()
@@ -70,121 +79,61 @@ open class APIClient: @unchecked Sendable {
     public init(
         configuration: Configuration,
         session: URLSession = URLSession(configuration: .default),
-        authStorage: (any APIAuthentication)? = nil
+        authCoordinator: AuthCoordinator? = nil
     ) {
         self.configuration = configuration
         self.session = session
-        self.authStorage = authStorage
+        self.authCoordinator = authCoordinator
+    }
+
+    /// Convenience initializer that constructs an `AuthCoordinator` from the
+    /// supplied `authStorage` plus `configuration.tokenRefreshHandler` and
+    /// `configuration.tokenRefreshThreshold`, then delegates to the designated
+    /// initializer.
+    @available(*, deprecated, message: "Construct an AuthCoordinator and pass it via init(configuration:session:authCoordinator:). Move tokenRefreshHandler and tokenRefreshThreshold off of Configuration onto the coordinator.")
+    public convenience init(
+        configuration: Configuration,
+        session: URLSession = URLSession(configuration: .default),
+        authStorage: any APIAuthentication
+    ) {
+        let coordinator = AuthCoordinator(
+            storage: authStorage,
+            refreshHandler: configuration.tokenRefreshHandler,
+            refreshThreshold: configuration.tokenRefreshThreshold
+        )
+        self.init(configuration: configuration, session: session, authCoordinator: coordinator)
     }
 
     // MARK: - Authentication
 
+    /// Returns true if the coordinator has a cached auth state.
+    /// Returns false if no coordinator is configured or the cache is empty.
     public var isSignedIn: Bool {
-        get {
-            authStateLock.lock()
-            defer { authStateLock.unlock() }
-            return cachedAuthState != nil
-        }
+        authCoordinator?.isSignedIn ?? false
     }
 
     /**
-     Gets the current authentication state from the authentication storage, and caches the result to make requests.
-     You should call this once shortly after initializing the `APIClient` if you provided an `authStorage`.
+     Loads the current authentication state from the coordinator's storage and
+     populates its cache. Call this once shortly after initializing the client
+     when an `authCoordinator` is configured.
      */
     public func refreshCurrentAuthState() async throws(AuthenticationError) {
-        guard let authStorage else { throw .noStoredCredentials }
-        let currentState = try await authStorage.getCurrentState()
-        authStateLock.withLock {
-            cachedAuthState = currentState
-        }
+        guard let authCoordinator else { throw .noStoredCredentials }
+        try await authCoordinator.loadCurrentState()
     }
 
     /**
-     Updates the cached authentication state directly without reading from storage.
-     Use this when you've just saved credentials and want to immediately update the cache.
+     Updates the coordinator's cached auth state directly without reading from
+     storage. Use this when you've just saved credentials and want to immediately
+     update the cache.
      */
     public func updateCachedAuthState(_ state: AuthenticationState?) {
-        authStateLock.withLock {
-            cachedAuthState = state
-        }
+        authCoordinator?.updateCachedState(state)
     }
 
     public func signOut() async {
-        guard let authStorage else { return }
-        await authStorage.clear()
-        authStateLock.withLock {
-            cachedAuthState = nil
-        }
-    }
-
-    /**
-     Checks if the current token needs to be refreshed based on expiration time.
-     Returns true if the token will expire within the configured threshold.
-     */
-    private func shouldRefreshToken() -> Bool {
-        guard let state = authStateLock.withLock({ cachedAuthState }) else {
-            return false
-        }
-
-        let timeUntilExpiration = state.expirationDate.timeIntervalSinceNow
-        return timeUntilExpiration <= configuration.tokenRefreshThreshold
-    }
-
-    /**
-     Performs a token refresh using the configured TokenRefreshHandler.
-     Updates both the auth storage and cached state with the new tokens.
-     Serializes concurrent refresh attempts to prevent duplicate refreshes.
-     */
-    private func performTokenRefresh() async throws {
-        // Atomically check if a refresh is in progress and create/store task if not
-        let (refreshTask, isNewTask) = tokenRefreshLock.withLock { () -> (Task<Void, Error>, Bool) in
-            // If a refresh is already in progress, return the existing task
-            if let existingTask = ongoingTokenRefreshTask {
-                Self.logger.info("Token refresh already in progress, waiting...")
-                return (existingTask, false)
-            }
-            
-            // Create a new refresh task
-            let newTask = Task { @Sendable in
-                guard let authStorage,
-                      let refreshHandler = configuration.tokenRefreshHandler,
-                      let currentState = authStateLock.withLock({ cachedAuthState }) else {
-                    throw APIError.unauthorized
-                }
-
-                Self.logger.info("Refreshing access token")
-
-                // Call the refresh handler to get new tokens
-                let newState = try await refreshHandler.refreshToken(
-                    using: currentState.refreshToken,
-                    client: self
-                )
-
-                // Update storage and cache
-                await authStorage.updateState(newState)
-                authStateLock.withLock {
-                    cachedAuthState = newState
-                }
-
-                Self.logger.info("Token refresh successful")
-            }
-            
-            // Store the new task atomically
-            ongoingTokenRefreshTask = newTask
-            return (newTask, true)
-        }
-        
-        // Execute the task (either existing or newly created)
-        defer {
-            // Clean up only if we created this task
-            if isNewTask {
-                tokenRefreshLock.withLock {
-                    ongoingTokenRefreshTask = nil
-                }
-            }
-        }
-        
-        try await refreshTask.value
+        guard let authCoordinator else { return }
+        await authCoordinator.signOut()
     }
 
     // MARK: - Request Building
@@ -231,7 +180,7 @@ open class APIClient: @unchecked Sendable {
         }
 
         if authorized {
-            if let accessToken = cachedAuthState?.accessToken {
+            if let accessToken = authCoordinator?.cachedAuthState?.accessToken {
                 request.addValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
             } else {
                 throw APIClientError.userNotAuthorized
@@ -256,7 +205,7 @@ open class APIClient: @unchecked Sendable {
 
     /**
      Downloads the contents of a URL based on the specified URL request. Handles ``APIError/retry(after:)`` up to the specified `retryLimit`
-     
+
      - Note: This method can throw any error type defined by your `ResponseHandler`. The automatic retry functionality
              only applies to `APIError.retry(after:)` errors and automatic token refresh for 401 errors.
      */
@@ -290,17 +239,17 @@ open class APIClient: @unchecked Sendable {
                     // Unauthenticated requests getting 401 should just fail immediately
                     // This prevents deadlock when refresh handler's request gets 401
                     let isAuthenticatedRequest = currentRequest.value(forHTTPHeaderField: "Authorization") != nil
-                    
-                    if isAuthenticatedRequest, 
-                       !tokenRefreshAttempted, 
-                       configuration.tokenRefreshHandler != nil, 
-                       authStorage != nil {
+
+                    if isAuthenticatedRequest,
+                       !tokenRefreshAttempted,
+                       let coordinator = authCoordinator,
+                       coordinator.refreshHandler != nil {
                         tokenRefreshAttempted = true
                         Self.logger.info("Received 401, attempting token refresh")
                         do {
-                            try await performTokenRefresh()
+                            try await coordinator.performTokenRefresh(client: self)
                             // Update the Authorization header with the new token
-                            if let newAccessToken = authStateLock.withLock({ cachedAuthState?.accessToken }) {
+                            if let newAccessToken = coordinator.cachedAuthState?.accessToken {
                                 currentRequest.setValue("Bearer \(newAccessToken)", forHTTPHeaderField: "Authorization")
                             }
                             // Retry the request with the new token
@@ -328,17 +277,17 @@ open class APIClient: @unchecked Sendable {
      */
     public func perform<T: Codable & Hashable & Sendable>(request: URLRequest, retryLimit: Int = 3) async throws -> T {
         var finalRequest = request
-        
+
         // Only check for token refresh if this is an authenticated request
         // This prevents deadlock when the refresh handler uses client.perform() for unauthenticated requests
         let isAuthenticatedRequest = request.value(forHTTPHeaderField: "Authorization") != nil
-        
-        if isAuthenticatedRequest && shouldRefreshToken() {
+
+        if isAuthenticatedRequest, let coordinator = authCoordinator, coordinator.shouldRefreshToken() {
             Self.logger.info("Token expires soon, proactively refreshing")
-            try await performTokenRefresh()
-            
+            try await coordinator.performTokenRefresh(client: self)
+
             // Update the Authorization header with the new token
-            if let newAccessToken = authStateLock.withLock({ cachedAuthState?.accessToken }) {
+            if let newAccessToken = coordinator.cachedAuthState?.accessToken {
                 finalRequest.setValue("Bearer \(newAccessToken)", forHTTPHeaderField: "Authorization")
             }
         }

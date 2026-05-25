@@ -65,8 +65,7 @@ struct APIClientRequestTests {
         let configuration = APIClient.Configuration(baseURL: baseURL)
         let client = APIClient(
             configuration: configuration,
-            session: mockSession.urlSession,
-            authStorage: nil
+            session: mockSession.urlSession
         )
         
         // Execute
@@ -97,8 +96,7 @@ struct APIClientRequestTests {
         let configuration = APIClient.Configuration(baseURL: baseURL)
         let client = APIClient(
             configuration: configuration,
-            session: mockSession.urlSession,
-            authStorage: nil
+            session: mockSession.urlSession
         )
         
         // Execute & Verify
@@ -127,8 +125,7 @@ struct APIClientRequestTests {
         let configuration = APIClient.Configuration(baseURL: baseURL)
         let client = APIClient(
             configuration: configuration,
-            session: mockSession.urlSession,
-            authStorage: nil
+            session: mockSession.urlSession
         )
         
         // Execute & Verify
@@ -157,8 +154,7 @@ struct APIClientRequestTests {
         let configuration = APIClient.Configuration(baseURL: baseURL)
         let client = APIClient(
             configuration: configuration,
-            session: mockSession.urlSession,
-            authStorage: nil
+            session: mockSession.urlSession
         )
         
         // Execute & Verify
@@ -196,8 +192,7 @@ struct APIClientCustomHandlerTests {
         )
         let client = APIClient(
             configuration: configuration,
-            session: mockSession.urlSession,
-            authStorage: nil
+            session: mockSession.urlSession
         )
         
         // Execute & Verify
@@ -234,8 +229,7 @@ struct APIClientCustomHandlerTests {
         )
         let client = APIClient(
             configuration: configuration,
-            session: mockSession.urlSession,
-            authStorage: nil
+            session: mockSession.urlSession
         )
         
         // Execute & Verify - should throw standard APIError
@@ -275,8 +269,7 @@ struct APIClientRetryTests {
         let configuration = APIClient.Configuration(baseURL: baseURL)
         let client = APIClient(
             configuration: configuration,
-            session: mockSession.urlSession,
-            authStorage: nil
+            session: mockSession.urlSession
         )
         
         let request = try client.mutableRequest(
@@ -322,8 +315,7 @@ struct APIClientRetryTests {
         let configuration = APIClient.Configuration(baseURL: baseURL)
         let client = APIClient(
             configuration: configuration,
-            session: mockSession.urlSession,
-            authStorage: nil
+            session: mockSession.urlSession
         )
         
         let request = try client.mutableRequest(
@@ -361,8 +353,7 @@ struct APIClientRetryTests {
         )
         let client = APIClient(
             configuration: configuration,
-            session: mockSession.urlSession,
-            authStorage: nil
+            session: mockSession.urlSession
         )
         
         let request = try client.mutableRequest(
@@ -390,7 +381,7 @@ struct APIClientConfigurationTests {
     func customBaseURL() throws {
         let baseURL = URL(string: "https://custom.api.com/v2")!
         let configuration = APIClient.Configuration(baseURL: baseURL)
-        let client = APIClient(configuration: configuration, authStorage: nil)
+        let client = APIClient(configuration: configuration)
         
         let request = try client.mutableRequest(
             forPath: "users",
@@ -411,7 +402,7 @@ struct APIClientConfigurationTests {
                 "X-Client-ID": "test-client"
             ]
         )
-        let client = APIClient(configuration: configuration, authStorage: nil)
+        let client = APIClient(configuration: configuration)
         
         let request = try client.mutableRequest(
             forPath: "users",
