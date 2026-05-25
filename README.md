@@ -6,6 +6,8 @@ A flexible, generic Swift package for building REST API clients with OAuth suppo
 
 - **Generic API Management**: Core `APIClient` that can be configured for any REST API
 - **OAuth Authentication**: Built-in support for OAuth with keychain storage
+- **Token Refresh**: Pluggable `TokenRefreshHandler` with proactive and reactive (401) refresh
+- **Shared Auth State**: `AuthCoordinator` lets multiple `APIClient` instances share one cache and coalesce refresh attempts
 - **Automatic Retry**: Intelligent retry handling for rate-limited requests
 - **Customizable Error Handling**: Protocol-based response handling for API-specific errors
 - **Pagination Support**: Built-in support for paginated responses
@@ -36,11 +38,21 @@ let configuration = APIClient.Configuration(
     ]
 )
 
+let coordinator = AuthCoordinator(
+    storage: KeychainAuthentication(serviceName: "com.example.app"),
+    refreshHandler: MyTokenRefreshHandler() // optional, see "Authentication" below
+)
+
 let client = APIClient(
     configuration: configuration,
-    authStorage: KeychainAuthentication(serviceName: "com.example.app")
+    authCoordinator: coordinator
 )
+
+// Load the cached state from storage once at startup.
+try await client.refreshCurrentAuthState()
 ```
+
+> If you only call unauthenticated endpoints, omit `authCoordinator` entirely.
 
 ### 2. Define Your API Client with Routes
 
@@ -243,6 +255,8 @@ do {
 
 ## Authentication
 
+Authentication state — the cached access token, the refresh handler, and the in-flight refresh task — lives on `AuthCoordinator`, not on `APIClient`. A coordinator can be used by one client or shared across many.
+
 ### OAuth Flow
 
 ```swift
@@ -250,28 +264,94 @@ do {
 let authState = AuthenticationState(
     accessToken: "access_token",
     refreshToken: "refresh_token",
-    expiresAt: Date().addingTimeInterval(7200)
+    expirationDate: Date().addingTimeInterval(7200)
 )
 
 let keychain = KeychainAuthentication(serviceName: "com.example.app")
-try await keychain.save(authState)
+await keychain.updateState(authState)
 
-// 2. Update the cached state
-client.updateCachedAuthState(authState)
+let coordinator = AuthCoordinator(storage: keychain)
+
+// 2. Update the cached state so the next request can build an authorized header
+coordinator.updateCachedState(authState)
+
+let client = APIClient(configuration: configuration, authCoordinator: coordinator)
 
 // 3. Make authenticated requests
 let request = try client.mutableRequest(
     forPath: "users/settings",
     isAuthorized: true,
-    withHTTPMethod: .get
+    withHTTPMethod: .GET
 )
 ```
+
+### Token Refresh
+
+Implement `TokenRefreshHandler` to teach the coordinator how to mint a new access token. The handler runs:
+
+- **Proactively** before `perform(request:)` when the cached token is within `refreshThreshold` of expiring (default 5 minutes).
+- **Reactively** when a 401 comes back on an authenticated request — the request is automatically retried once with the new token.
+
+Concurrent refresh attempts (across requests *and* across clients sharing the coordinator) are coalesced into a single in-flight task — the handler runs exactly once per refresh cycle.
+
+```swift
+struct OAuthRefreshHandler: TokenRefreshHandler {
+    func refreshToken(using refreshToken: String, client: APIClient) async throws -> AuthenticationState {
+        let request = try client.mutableRequest(
+            forPath: "oauth/token",
+            isAuthorized: false, // refresh endpoint is unauthenticated
+            withHTTPMethod: .POST,
+            body: ["refresh_token": refreshToken, "grant_type": "refresh_token"]
+        )
+        let response: TokenResponse = try await client.perform(request: request)
+        return AuthenticationState(
+            accessToken: response.accessToken,
+            refreshToken: response.refreshToken,
+            expirationDate: Date().addingTimeInterval(TimeInterval(response.expiresIn))
+        )
+    }
+}
+
+let coordinator = AuthCoordinator(
+    storage: KeychainAuthentication(serviceName: "com.example.app"),
+    refreshHandler: OAuthRefreshHandler(),
+    refreshThreshold: 300 // refresh when <= 5 minutes from expiration
+)
+```
+
+### Sharing auth across multiple clients
+
+A common pattern: one logical API, but two `URLSession` instances — e.g., a foreground session for interactive requests and a background session for uploads. Both clients should share auth state so a refresh triggered by one is immediately visible to the other.
+
+```swift
+let coordinator = AuthCoordinator(
+    storage: KeychainAuthentication(serviceName: "com.example.app"),
+    refreshHandler: OAuthRefreshHandler()
+)
+try await coordinator.loadCurrentState()
+
+let interactiveClient = APIClient(
+    configuration: configuration,
+    session: URLSession(configuration: .default),
+    authCoordinator: coordinator
+)
+
+let backgroundClient = APIClient(
+    configuration: configuration,
+    session: URLSession(configuration: .background(withIdentifier: "uploads")),
+    authCoordinator: coordinator
+)
+```
+
+When both clients hit 401 simultaneously, the refresh handler is invoked exactly once, and both clients see the new token.
 
 ### Sign Out
 
 ```swift
-await client.signOut()
+await client.signOut() // clears storage + cache on the coordinator
 ```
+
+When two clients share a coordinator, signing out via either one is observed by both.
 
 ## Pagination
 
