@@ -405,4 +405,76 @@ struct AuthCoordinatorTests {
         // The in-flight refresh saw its task get cancelled and rethrew.
         #expect(refreshThrew)
     }
+
+    // MARK: - 401 cached-token shortcut
+
+    @Test("401 retries with the coordinator's cached token before refreshing")
+    func unauthorizedRetriesWithCachedTokenBeforeRefreshing() async throws {
+        let mockSession = MockSession()
+
+        // Refresh handler MUST NOT be called — assert via call count.
+        let handler = MockTokenRefreshHandler()
+
+        let storage = MockAuthStorage()
+        await storage.updateState(AuthenticationState(
+            accessToken: "old",
+            refreshToken: "rt",
+            // Far-future so proactive refresh does not fire.
+            expirationDate: Date().addingTimeInterval(3600)
+        ))
+
+        let coordinator = AuthCoordinator(storage: storage, refreshHandler: handler)
+        try await coordinator.loadCurrentState()
+
+        let configuration = APIClient.Configuration(baseURL: baseURL)
+        let client = APIClient(
+            configuration: configuration,
+            session: mockSession.urlSession,
+            authCoordinator: coordinator
+        )
+
+        // Build the request now, while the cache still holds "old" —
+        // mutableRequest snapshots the cached token into the header.
+        let request = try client.mutableRequest(
+            forPath: "users/me",
+            isAuthorized: true,
+            withHTTPMethod: .GET
+        )
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer old")
+
+        // Simulate another client refreshing concurrently and updating the
+        // shared coordinator's cache before our request even goes out.
+        coordinator.updateCachedState(AuthenticationState(
+            accessToken: "new",
+            refreshToken: "new-rt",
+            expirationDate: Date().addingTimeInterval(3600)
+        ))
+
+        // Mock: 401 when the request still has "Bearer old", 200 when it
+        // carries "Bearer new". With the cached-token shortcut, our retry
+        // should use "new" without invoking the refresh handler.
+        let testUser = TestUser(id: "1", name: "Shortcut User")
+        let userData = try JSONEncoder().encode(testUser)
+
+        let unauthorizedForOld = try RequestMocking.MockedResponse(
+            urlString: "https://api.example.com/users/me",
+            result: .success(Data()),
+            httpCode: 401,
+            requestMatcher: { $0.value(forHTTPHeaderField: "Authorization") == "Bearer old" }
+        )
+        let okForNew = try RequestMocking.MockedResponse(
+            urlString: "https://api.example.com/users/me",
+            result: .success(userData),
+            httpCode: 200,
+            requestMatcher: { $0.value(forHTTPHeaderField: "Authorization") == "Bearer new" }
+        )
+        await mockSession.add(mock: unauthorizedForOld)
+        await mockSession.add(mock: okForNew)
+
+        let result: TestUser = try await client.perform(request: request)
+
+        #expect(result.id == "1")
+        // The shortcut handled it — no refresh handler invocation.
+        #expect(await handler.refreshCallCount == 0)
+    }
 }

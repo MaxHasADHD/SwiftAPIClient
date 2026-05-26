@@ -16,6 +16,11 @@ extension RequestMocking {
         let headers: [String: String]
         let loadingTime: TimeInterval
         let customResponse: URLResponse?
+        /// Optional extra predicate evaluated against the incoming request.
+        /// When set, the mock only matches if both the URL matches AND the
+        /// predicate returns true. Useful for returning different responses
+        /// for the same URL based on request headers.
+        let requestMatcher: (@Sendable (URLRequest) -> Bool)?
     }
 }
 
@@ -29,7 +34,8 @@ extension RequestMocking.MockedResponse {
         result: Result<Data, Swift.Error>,
         httpCode: Int = 200,
         headers: [HTTPHeader] = [.contentType, .apiKey("")],
-        loadingTime: TimeInterval = .zero
+        loadingTime: TimeInterval = .zero,
+        requestMatcher: (@Sendable (URLRequest) -> Bool)? = nil
     ) throws {
         guard let url = URL(string: urlString) else { throw Error.failedMockCreation }
         self.url = url
@@ -38,5 +44,6 @@ extension RequestMocking.MockedResponse {
         self.headers = Dictionary(headers.map { ($0.key, $0.value) }) { _, last in last }
         self.loadingTime = loadingTime
         self.customResponse = nil
+        self.requestMatcher = requestMatcher
     }
 }

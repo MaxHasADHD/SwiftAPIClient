@@ -37,12 +37,17 @@ actor MockSession {
         mocks.removeAll()
     }
     
-    /// Find a mock for the given request
+    /// Find a mock for the given request. When multiple mocks share a URL,
+    /// the first one whose `requestMatcher` (if any) returns true wins —
+    /// mocks without a matcher act as fallbacks and are tried in insertion
+    /// order after matcher-bearing mocks.
     func mock(for request: URLRequest) -> RequestMocking.MockedResponse? {
-        return mocks.first { mock in
-            guard let url = request.url else { return false }
-            return mock.url.compareComponents(url)
+        guard let url = request.url else { return nil }
+        let urlMatches = mocks.filter { $0.url.compareComponents(url) }
+        if let matched = urlMatches.first(where: { $0.requestMatcher?(request) == true }) {
+            return matched
         }
+        return urlMatches.first(where: { $0.requestMatcher == nil })
     }
     
     nonisolated func getID() -> UUID {

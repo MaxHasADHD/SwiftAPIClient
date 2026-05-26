@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - `AuthCoordinator.signOut()` now cancels any in-flight refresh and skips persisting its result. Previously, signing out while a refresh was in flight could leave the refreshed token in storage and cache after the sign-out completed.
 
+### Changed
+- 401 retry path in `APIClient.fetchData` now tries the coordinator's cached access token before invoking the refresh handler. When another client (or another in-flight request) has already refreshed via the same `AuthCoordinator`, the retry uses the up-to-date cached token without triggering a second refresh round-trip.
+
 ## [1.5.0]
 
 ### Added

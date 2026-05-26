@@ -212,6 +212,7 @@ open class APIClient: @unchecked Sendable {
     public func fetchData(request: URLRequest, retryLimit: Int = 3) async throws -> (Data, URLResponse) {
         var retryCount = 0
         var tokenRefreshAttempted = false
+        var cachedTokenShortcutTried = false
         var currentRequest = request
 
         while true {
@@ -238,12 +239,28 @@ open class APIClient: @unchecked Sendable {
                     // Only attempt token refresh for authenticated requests
                     // Unauthenticated requests getting 401 should just fail immediately
                     // This prevents deadlock when refresh handler's request gets 401
-                    let isAuthenticatedRequest = currentRequest.value(forHTTPHeaderField: "Authorization") != nil
+                    let currentAuthHeader = currentRequest.value(forHTTPHeaderField: "Authorization")
+                    let isAuthenticatedRequest = currentAuthHeader != nil
 
-                    if isAuthenticatedRequest,
-                       !tokenRefreshAttempted,
-                       let coordinator = authCoordinator,
-                       coordinator.refreshHandler != nil {
+                    guard isAuthenticatedRequest,
+                          let coordinator = authCoordinator,
+                          coordinator.refreshHandler != nil
+                    else { throw error }
+
+                    // If another client (or another in-flight request) refreshed
+                    // while this request was in flight, the coordinator's cache
+                    // is now ahead of the token we sent. Retry once with the
+                    // cached token before paying for another refresh round-trip.
+                    if !cachedTokenShortcutTried,
+                       let cachedAccessToken = coordinator.cachedAuthState?.accessToken,
+                       currentAuthHeader != "Bearer \(cachedAccessToken)" {
+                        cachedTokenShortcutTried = true
+                        Self.logger.info("Received 401; cached token differs from the one sent, retrying with cached token before refreshing")
+                        currentRequest.setValue("Bearer \(cachedAccessToken)", forHTTPHeaderField: "Authorization")
+                        continue
+                    }
+
+                    if !tokenRefreshAttempted {
                         tokenRefreshAttempted = true
                         Self.logger.info("Received 401, attempting token refresh")
                         do {
@@ -258,9 +275,9 @@ open class APIClient: @unchecked Sendable {
                             Self.logger.error("Token refresh failed: \(error)")
                             throw error
                         }
-                    } else {
-                        throw error
                     }
+
+                    throw error
                 default:
                     throw error
                 }
