@@ -98,8 +98,15 @@ public final class AuthCoordinator: @unchecked Sendable {
         stateLock.withLock { cachedState = state }
     }
 
-    /// Clears storage and the in-memory cache.
+    /// Clears storage and the in-memory cache. Any in-flight refresh is
+    /// cancelled so its result cannot overwrite the cleared state.
     public func signOut() async {
+        let inflight: Task<AuthenticationState, Error>? = refreshLock.withLock {
+            let task = ongoingRefreshTask
+            ongoingRefreshTask = nil
+            return task
+        }
+        inflight?.cancel()
         await storage.clear()
         stateLock.withLock { cachedState = nil }
     }
@@ -142,6 +149,11 @@ public final class AuthCoordinator: @unchecked Sendable {
                     using: currentState.refreshToken,
                     client: client
                 )
+
+                // If signOut() ran while the handler was in flight, the task
+                // was cancelled. Bail before persisting so we don't overwrite
+                // the cleared state with the refreshed token.
+                try Task.checkCancellation()
 
                 await storage.updateState(newState)
                 stateLock.withLock { cachedState = newState }

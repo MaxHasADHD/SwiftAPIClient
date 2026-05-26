@@ -351,7 +351,7 @@ When both clients hit 401 simultaneously, the refresh handler is invoked exactly
 await client.signOut() // clears storage + cache on the coordinator
 ```
 
-When two clients share a coordinator, signing out via either one is observed by both.
+When two clients share a coordinator, signing out via either one is observed by both. Any in-flight token refresh is cancelled so its result cannot land in storage after the sign-out completes.
 
 ## Pagination
 

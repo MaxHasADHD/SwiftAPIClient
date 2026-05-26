@@ -357,4 +357,52 @@ struct AuthCoordinatorTests {
         #expect(clientA.isSignedIn == false)
         #expect(clientB.isSignedIn == false)
     }
+
+    // MARK: - signOut race with in-flight refresh
+
+    @Test("signOut during in-flight refresh discards the refreshed token")
+    func signOutCancelsInFlightRefresh() async throws {
+        let storage = MockAuthStorage()
+        await storage.updateState(AuthenticationState(
+            accessToken: "old", refreshToken: "old-rt", expirationDate: Date().addingTimeInterval(60)
+        ))
+
+        // Long handler delay so we have a wide window to call signOut while
+        // the refresh is in flight.
+        let handler = MockTokenRefreshHandler()
+        await handler.setNewToken(TokenResponse(accessToken: "new", refreshToken: "new-rt", expiresIn: 3600))
+        await handler.setRefreshDelay(0.3)
+
+        let coordinator = AuthCoordinator(storage: storage, refreshHandler: handler)
+        try await coordinator.loadCurrentState()
+
+        let configuration = APIClient.Configuration(baseURL: baseURL)
+        let client = APIClient(configuration: configuration, authCoordinator: coordinator)
+
+        // Kick off the refresh, then sign out before it finishes.
+        let refreshTask = Task<Bool, Never> {
+            do {
+                _ = try await coordinator.performTokenRefresh(client: client)
+                return false // refresh succeeded — should not happen post-signOut
+            } catch {
+                return true  // refresh threw (CancellationError expected)
+            }
+        }
+
+        try await Task.sleep(for: .milliseconds(50))
+        await coordinator.signOut()
+
+        let refreshThrew = await refreshTask.value
+
+        // After signOut, the coordinator's state should remain cleared even
+        // though the handler eventually produced a fresh token.
+        #expect(coordinator.cachedAuthState == nil)
+        #expect(coordinator.isSignedIn == false)
+        // Storage should not have been updated with the refreshed token.
+        await #expect(throws: AuthenticationError.noStoredCredentials) {
+            _ = try await storage.getCurrentState()
+        }
+        // The in-flight refresh saw its task get cancelled and rethrew.
+        #expect(refreshThrew)
+    }
 }
