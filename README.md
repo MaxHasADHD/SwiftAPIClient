@@ -355,15 +355,60 @@ When two clients share a coordinator, signing out via either one is observed by 
 
 ## Pagination
 
-For paginated responses, use `PagedObject`:
+For paginated responses, declare your route as `Route<PagedObject<[T]>>` and use either `.perform()` for a single page or one of the helpers below to walk all pages.
 
 ```swift
-typealias Users = PagedObject<[User]>
+extension APIClient {
+    func listUsers() -> Route<PagedObject<[User]>> {
+        Route(path: "users", method: .GET, apiClient: self)
+    }
+}
 
-let pagedUsers: Users = try await client.perform(request: request)
-print("Page \(pagedUsers.currentPage) of \(pagedUsers.pageCount)")
-print("Users: \(pagedUsers.items)")
+// One page
+let page = try await client.listUsers().limit(100).page(1).perform()
+print("Page \(page.currentPage) of \(page.pageCount): \(page.object.count) users")
+
+// All pages at once (concurrent, deduplicated via Set)
+let allUsers: Set<User> = try await client.listUsers().limit(100).fetchAllPages()
+
+// Streamed page-by-page
+for try await batch in client.listUsers().limit(100).pagedResults() {
+    process(batch) // [User] for the current page
+}
 ```
+
+### Pagination response headers
+
+`PagedObject` carries four pieces of metadata pulled from response headers:
+
+| Property | Default header | Notes |
+|---|---|---|
+| `currentPage` | `X-Pagination-Page` | 1-indexed |
+| `pageCount` | `X-Pagination-Page-Count` | Total pages, as reported by the server |
+| `limit` | `X-Pagination-Limit` | Optional. Items the server **actually** served on this page — may be lower than what `.limit(_:)` requested |
+| `itemCount` | `X-Pagination-Item-Count` | Optional. Total items across all pages |
+
+When `limit` and `itemCount` are both present, `fetchAllPages` and `pagedResults` compute the true total page count from `ceil(itemCount / limit)` rather than trusting `pageCount` blindly. This matters for servers (e.g., Trakt) that may downgrade the requested page size for heavier response modes — in those cases the `pageCount` header can reflect the requested limit rather than the actual served size, leading to silently truncated results if it's used as the loop bound.
+
+`fetchAllPages` additionally probes pages past the stated `pageCount` (capped at 10 extra) if the collected item count is still below `itemCount` — a final safety net for servers whose headers and reality diverge.
+
+### Customizing header names
+
+If your API uses different header names, pass a custom `PaginationHeaders`:
+
+```swift
+let configuration = APIClient.Configuration(
+    baseURL: baseURL,
+    paginationHeaders: PaginationHeaders(
+        page: "X-Page",
+        pageCount: "X-Total-Pages",
+        limit: "X-Per-Page",
+        itemCount: "X-Total-Count"
+    )
+)
+```
+
+Headers your server doesn't send will simply produce `nil` on the corresponding `PagedObject` property (for `limit` and `itemCount`) or `0` (for `currentPage` and `pageCount`). Older APIs that only emit page/page-count headers continue to work unchanged.
 
 ## Automatic Retry
 

@@ -14,8 +14,9 @@ open class APIClient: @unchecked Sendable {
     public struct Configuration: Sendable {
         public let baseURL: URL
         public let additionalHeaders: [String: String]
-        public let paginationPageHeader: String
-        public let paginationPageCountHeader: String
+        /// Names of the headers SwiftAPIClient reads to extract pagination
+        /// metadata. Defaults to Trakt's `X-Pagination-*` conventions.
+        public let paginationHeaders: PaginationHeaders
         public let responseHandler: any ResponseHandler
         public let dateDecodingStrategy: JSONDecoder.DateDecodingStrategy
 
@@ -33,8 +34,7 @@ open class APIClient: @unchecked Sendable {
         public init(
             baseURL: URL,
             additionalHeaders: [String: String] = [:],
-            paginationPageHeader: String = "x-pagination-page",
-            paginationPageCountHeader: String = "x-pagination-page-count",
+            paginationHeaders: PaginationHeaders = .default,
             responseHandler: any ResponseHandler = DefaultResponseHandler(),
             dateDecodingStrategy: JSONDecoder.DateDecodingStrategy = .custom(customDateDecodingStrategy),
             tokenRefreshHandler: (any TokenRefreshHandler)? = nil,
@@ -42,8 +42,7 @@ open class APIClient: @unchecked Sendable {
         ) {
             self.baseURL = baseURL
             self.additionalHeaders = additionalHeaders
-            self.paginationPageHeader = paginationPageHeader
-            self.paginationPageCountHeader = paginationPageCountHeader
+            self.paginationHeaders = paginationHeaders
             self.responseHandler = responseHandler
             self.dateDecodingStrategy = dateDecodingStrategy
             self.tokenRefreshHandler = tokenRefreshHandler
@@ -322,11 +321,17 @@ open class APIClient: @unchecked Sendable {
             let decodedItems = try decoder.decode(pagedType.objectType, from: data)
             var currentPage = 0
             var pageCount = 0
+            var limit: Int?
+            var itemCount: Int?
             if let r = response as? HTTPURLResponse {
-                currentPage = Int(r.value(forHTTPHeaderField: configuration.paginationPageHeader) ?? "0") ?? 0
-                pageCount = Int(r.value(forHTTPHeaderField: configuration.paginationPageCountHeader) ?? "0") ?? 0
+                let headers = configuration.paginationHeaders
+                currentPage = Int(r.value(forHTTPHeaderField: headers.page) ?? "0") ?? 0
+                pageCount = Int(r.value(forHTTPHeaderField: headers.pageCount) ?? "0") ?? 0
+                limit = (r.value(forHTTPHeaderField: headers.limit)).flatMap(Int.init)
+                itemCount = (r.value(forHTTPHeaderField: headers.itemCount)).flatMap(Int.init)
             }
-            return pagedType.createPagedObject(with: decodedItems, currentPage: currentPage, pageCount: pageCount) as! T
+            let pagination = PaginationInfo(currentPage: currentPage, pageCount: pageCount, limit: limit, itemCount: itemCount)
+            return pagedType.createPagedObject(with: decodedItems, pagination: pagination) as! T
         }
 
         return try decoder.decode(T.self, from: data)

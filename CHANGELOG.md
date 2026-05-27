@@ -5,6 +5,54 @@ All notable changes to SwiftAPIClient will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0]
+
+### Added
+- `PaginationHeaders` config struct (`PagedObject.swift`) for customizing the names of the four pagination response headers. Defaults to `x-pagination-page` / `-page-count` / `-limit` / `-item-count`.
+- `PagedObject.limit` and `PagedObject.itemCount` — optional values extracted from `X-Pagination-Limit` and `X-Pagination-Item-Count` response headers. Empty (nil) when the server doesn't send them, preserving behavior for older APIs.
+- `PaginationInfo` struct now passed to `PagedObjectProtocol.createPagedObject(with:pagination:)`, carrying `currentPage`, `pageCount`, `limit`, and `itemCount` together.
+
+### Changed
+- `Route.fetchAllPages` and `Route.pagedResults` now compute the effective total page count from `itemCount / limit` when the server provides both headers, falling back to `pageCount` otherwise. This defends against servers (notably Trakt as of May 2026) that downgrade the requested page size for "heavy" response modes — in that scenario the `pageCount` header alone can be wrong, leading to silently truncated results.
+- `Route.fetchAllPages` adds a defensive sequential probe after the main concurrent loop: if the server's reported `itemCount` is higher than what was collected, it walks subsequent pages (capped at 10) until an empty page or no-progress. Final safety net for servers whose pagination headers diverge from reality.
+- **BREAKING**: `APIClient.Configuration.init` — four `pagination*Header: String` parameters replaced by a single `paginationHeaders: PaginationHeaders = .default` parameter. The four flat stored properties on `Configuration` are also removed in favor of `paginationHeaders`.
+- **BREAKING**: `PagedObjectProtocol.createPagedObject(with:currentPage:pageCount:)` → `createPagedObject(with:pagination:)`. Only relevant for custom implementers of the protocol; consumers of `PagedObject` itself are unaffected.
+
+### Migration Guide
+For `APIClient.Configuration`:
+```swift
+// Before
+let configuration = APIClient.Configuration(
+    baseURL: baseURL,
+    paginationPageHeader: "x-pagination-page",
+    paginationPageCountHeader: "x-pagination-page-count"
+)
+
+// After — defaults match the Trakt/X-Pagination-* convention
+let configuration = APIClient.Configuration(baseURL: baseURL)
+
+// After — with non-default header names
+let configuration = APIClient.Configuration(
+    baseURL: baseURL,
+    paginationHeaders: PaginationHeaders(
+        page: "X-Page",
+        pageCount: "X-Total-Pages",
+        limit: "X-Per-Page",
+        itemCount: "X-Total-Count"
+    )
+)
+```
+
+For custom `PagedObjectProtocol` implementers (rare):
+```swift
+// Before
+static func createPagedObject(with object: Decodable, currentPage: Int, pageCount: Int) -> Self { ... }
+
+// After
+static func createPagedObject(with object: Decodable, pagination: PaginationInfo) -> Self { ... }
+// pagination.currentPage, pagination.pageCount, pagination.limit, pagination.itemCount
+```
+
 ## [1.5.1]
 
 ### Fixed

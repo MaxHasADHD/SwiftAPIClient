@@ -12,6 +12,8 @@ public enum HTTPHeader {
     case apiKey(String)
     case page(Int)
     case pageCount(Int)
+    case limit(Int)
+    case itemCount(Int)
     case retry(TimeInterval)
 
     public var key: String {
@@ -24,6 +26,10 @@ public enum HTTPHeader {
             "X-Pagination-Page"
         case .pageCount:
             "X-Pagination-Page-Count"
+        case .limit:
+            "X-Pagination-Limit"
+        case .itemCount:
+            "X-Pagination-Item-Count"
         case .retry:
             "retry-after"
         }
@@ -39,9 +45,12 @@ public enum HTTPHeader {
             page.description
         case .pageCount(let pageCount):
             pageCount.description
+        case .limit(let limit):
+            limit.description
+        case .itemCount(let itemCount):
+            itemCount.description
         case .retry(let delay):
             delay.description
         }
     }
 }
-

@@ -135,17 +135,40 @@ actor AsyncSemaphore {
 
 extension Route where T: PagedObjectProtocol {
 
+    /// Computes the true total page count from a paged response.
+    ///
+    /// Some servers (notably Trakt as of May 2026) may downgrade the requested
+    /// page size for "heavy" response modes. When that happens, `pageCount` —
+    /// which may be calculated against the *requested* limit — is unreliable.
+    /// If the server also reports the actual served `limit` and total `itemCount`,
+    /// derive page count from those instead.
+    ///
+    /// Falls back to `pageCount` if the additional headers aren't available,
+    /// preserving behavior for servers that haven't adopted them.
+    private static func effectivePageCount<Element>(from firstPage: PagedObject<[Element]>) -> Int {
+        if let itemCount = firstPage.itemCount, let limit = firstPage.limit, limit > 0 {
+            return (itemCount + limit - 1) / limit
+        }
+        return firstPage.pageCount
+    }
+
     /// Fetches all pages for a paginated endpoint, and returns the data in a Set.
+    ///
+    /// Uses `itemCount` / `limit` from response headers when available to compute
+    /// the true page count (defends against servers downgrading the requested
+    /// page size). Falls back to `pageCount` when those headers aren't present.
     public func fetchAllPages<Element>(maxConcurrentRequests preferredMaxConcurrentRequests: Int = 5) async throws -> Set<Element> where T.Type == PagedObject<[Element]>.Type {
         // Fetch first page
         let firstPage = try await self.page(1).perform()
         var resultSet = Set<Element>(firstPage.object)
 
+        let totalPages = Self.effectivePageCount(from: firstPage)
+
         // Return early if there's only one page
-        guard firstPage.pageCount > 1 else { return resultSet }
+        guard totalPages > 1 else { return resultSet }
         resultSet = await withTaskGroup(of: [Element].self, returning: Set<Element>.self) { group in
-            let maxConcurrentRequests = min(firstPage.pageCount - 1, preferredMaxConcurrentRequests)
-            let pages = 2...firstPage.pageCount
+            let maxConcurrentRequests = min(totalPages - 1, preferredMaxConcurrentRequests)
+            let pages = 2...totalPages
 
             let indexStream = AsyncStream<Int> { continuation in
                 for i in pages {
@@ -178,6 +201,24 @@ extension Route where T: PagedObjectProtocol {
             return results
         }
 
+        // Defensive tail: if the server reported a higher itemCount than we
+        // collected (e.g. headers and reality diverge), sequentially probe
+        // additional pages until we hit one that's empty or no new items appear.
+        // Caps at 10 extra pages so we never loop forever on a misbehaving server.
+        if let itemCount = firstPage.itemCount, resultSet.count < itemCount {
+            var probePage = totalPages + 1
+            let maxProbePages = 10
+            for _ in 0..<maxProbePages {
+                guard let next = try? await self.page(probePage).perform() else { break }
+                if next.object.isEmpty { break }
+                let before = resultSet.count
+                resultSet.formUnion(next.object)
+                if resultSet.count == before { break } // duplicates only — no progress
+                if resultSet.count >= itemCount { break }
+                probePage += 1
+            }
+        }
+
         return resultSet
     }
 
@@ -190,14 +231,15 @@ extension Route where T: PagedObjectProtocol {
                     let firstPage = try await self.page(1).perform()
                     continuation.yield(firstPage.object)
 
-                    guard firstPage.pageCount > 1 else {
+                    let totalPages = Self.effectivePageCount(from: firstPage)
+                    guard totalPages > 1 else {
                         continuation.finish()
                         return
                     }
 
                     // Use a semaphore to limit concurrency
                     let semaphore = AsyncSemaphore(value: preferredMaxConcurrentRequests)
-                    let pages = 2...firstPage.pageCount
+                    let pages = 2...totalPages
 
                     try await withThrowingTaskGroup(of: (Int, [Element]).self) { group in
                         for pageIndex in pages {
