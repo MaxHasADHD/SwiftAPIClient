@@ -139,14 +139,20 @@ public final class AuthCoordinator: @unchecked Sendable {
                 guard let refreshHandler else {
                     throw APIError.unauthorized
                 }
-                guard let currentState = stateLock.withLock({ cachedState }) else {
-                    throw APIError.unauthorized
+
+                // Prefer the cached refresh token; fall back to storage when the
+                // cache is cold or the access token has already expired. Reading
+                // inside the task keeps concurrent cold callers coalesced.
+                let refreshToken = if let cached = stateLock.withLock({ cachedState?.refreshToken }) {
+                    cached
+                } else {
+                    try await storedRefreshToken()
                 }
 
                 Self.logger.info("Refreshing access token")
 
                 let newState = try await refreshHandler.refreshToken(
-                    using: currentState.refreshToken,
+                    using: refreshToken,
                     client: client
                 )
 
@@ -175,5 +181,17 @@ public final class AuthCoordinator: @unchecked Sendable {
         }
 
         return try await task.value
+    }
+
+    /// The stored refresh token, tolerating an expired access token. Throws
+    /// `APIError.unauthorized` when there are no stored credentials.
+    private func storedRefreshToken() async throws -> String {
+        do {
+            return try await storage.getCurrentState().refreshToken
+        } catch AuthenticationError.tokenExpired(let refreshToken) {
+            return refreshToken
+        } catch {
+            throw APIError.unauthorized
+        }
     }
 }

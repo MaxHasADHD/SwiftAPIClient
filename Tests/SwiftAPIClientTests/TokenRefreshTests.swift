@@ -57,6 +57,7 @@ actor MockTokenRefreshHandler: TokenRefreshHandler {
     var shouldFail = false
     var newToken: TokenResponse?
     var refreshDelay: TimeInterval = 0
+    var lastRefreshToken: String?
     
     func setNewToken(_ token: TokenResponse) {
         newToken = token
@@ -72,7 +73,8 @@ actor MockTokenRefreshHandler: TokenRefreshHandler {
     
     func refreshToken(using refreshToken: String, client: APIClient) async throws -> AuthenticationState {
         refreshCallCount += 1
-        
+        lastRefreshToken = refreshToken
+
         // Simulate network delay if configured
         if refreshDelay > 0 {
             try await Task.sleep(for: .seconds(refreshDelay))

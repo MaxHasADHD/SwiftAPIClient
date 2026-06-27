@@ -166,6 +166,70 @@ struct AuthCoordinatorTests {
         #expect(storageState.accessToken == "new")
     }
 
+    @Test("performTokenRefresh refreshes from storage when the cache is cold and the token is expired")
+    func refreshFromColdCacheExpiredToken() async throws {
+        let storage = MockAuthStorage()
+        await storage.updateState(AuthenticationState(
+            accessToken: "old", refreshToken: "old-rt", expirationDate: Date().addingTimeInterval(-60)
+        ))
+
+        let handler = MockTokenRefreshHandler()
+        await handler.setNewToken(TokenResponse(accessToken: "new", refreshToken: "new-rt", expiresIn: 3600))
+
+        // Note: loadCurrentState() is intentionally NOT called — the cache is cold,
+        // as it would be on a cold launch with an already-expired access token.
+        let coordinator = AuthCoordinator(storage: storage, refreshHandler: handler)
+        #expect(coordinator.cachedAuthState == nil)
+
+        let configuration = APIClient.Configuration(baseURL: baseURL)
+        let client = APIClient(configuration: configuration, authCoordinator: coordinator)
+
+        let newState = try await coordinator.performTokenRefresh(client: client)
+
+        #expect(newState.accessToken == "new")
+        #expect(await handler.lastRefreshToken == "old-rt")
+        #expect(coordinator.cachedAuthState?.accessToken == "new")
+        let storageState = try await storage.getCurrentState()
+        #expect(storageState.accessToken == "new")
+    }
+
+    @Test("performTokenRefresh refreshes from storage when the cache is cold and the token is still valid")
+    func refreshFromColdCacheValidToken() async throws {
+        let storage = MockAuthStorage()
+        await storage.updateState(AuthenticationState(
+            accessToken: "old", refreshToken: "valid-rt", expirationDate: Date().addingTimeInterval(3600)
+        ))
+
+        let handler = MockTokenRefreshHandler()
+        await handler.setNewToken(TokenResponse(accessToken: "new", refreshToken: "new-rt", expiresIn: 3600))
+
+        let coordinator = AuthCoordinator(storage: storage, refreshHandler: handler)
+        #expect(coordinator.cachedAuthState == nil)
+
+        let configuration = APIClient.Configuration(baseURL: baseURL)
+        let client = APIClient(configuration: configuration, authCoordinator: coordinator)
+
+        _ = try await coordinator.performTokenRefresh(client: client)
+
+        #expect(await handler.lastRefreshToken == "valid-rt")
+        #expect(coordinator.cachedAuthState?.accessToken == "new")
+    }
+
+    @Test("performTokenRefresh throws unauthorized when the cache is cold and storage is empty")
+    func refreshFromColdCacheNoCredentials() async throws {
+        let storage = MockAuthStorage()
+        let handler = MockTokenRefreshHandler()
+        let coordinator = AuthCoordinator(storage: storage, refreshHandler: handler)
+
+        let configuration = APIClient.Configuration(baseURL: baseURL)
+        let client = APIClient(configuration: configuration, authCoordinator: coordinator)
+
+        await #expect(throws: APIError.unauthorized) {
+            _ = try await coordinator.performTokenRefresh(client: client)
+        }
+        #expect(await handler.refreshCallCount == 0)
+    }
+
     @Test("Concurrent performTokenRefresh calls share one in-flight task")
     func refreshDeduplication() async throws {
         let storage = MockAuthStorage()

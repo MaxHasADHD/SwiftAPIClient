@@ -84,7 +84,7 @@ private final class SessionRegistry: @unchecked Sendable {
     }
     
     func unregister(id: UUID) {
-        lock.withLock {
+        _ = lock.withLock {
             sessions.removeValue(forKey: id)
         }
     }
