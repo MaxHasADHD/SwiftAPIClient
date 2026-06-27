@@ -22,6 +22,9 @@ public enum AuthenticationError: Error, Equatable {
     case tokenExpired(refreshToken: String)
     /// Thrown if credentials could not be retrieved.
     case noStoredCredentials
+    /// The client has no `AuthCoordinator` configured — a setup error, distinct
+    /// from the user simply having no stored credentials.
+    case notConfigured
 }
 
 public protocol APIAuthentication: Sendable {

@@ -43,6 +43,15 @@ struct AuthCoordinatorTests {
         #expect(coordinator.cachedAuthState?.accessToken == "access")
     }
 
+    @Test("refreshCurrentAuthState throws notConfigured when the client has no coordinator")
+    func refreshCurrentAuthStateNoCoordinator() async throws {
+        let client = APIClient(configuration: APIClient.Configuration(baseURL: baseURL))
+
+        await #expect(throws: AuthenticationError.notConfigured) {
+            try await client.refreshCurrentAuthState()
+        }
+    }
+
     @Test("loadCurrentState propagates noStoredCredentials")
     func loadCurrentStatePropagatesError() async throws {
         let storage = MockAuthStorage()

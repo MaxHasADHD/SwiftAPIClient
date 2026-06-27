@@ -117,7 +117,7 @@ open class APIClient: @unchecked Sendable {
      when an `authCoordinator` is configured.
      */
     public func refreshCurrentAuthState() async throws(AuthenticationError) {
-        guard let authCoordinator else { throw .noStoredCredentials }
+        guard let authCoordinator else { throw .notConfigured }
         try await authCoordinator.loadCurrentState()
     }
 
