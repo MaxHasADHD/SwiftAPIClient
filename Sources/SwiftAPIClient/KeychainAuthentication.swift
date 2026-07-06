@@ -29,35 +29,33 @@ public actor KeychainAuthentication: APIAuthentication {
         self.keychainHelper = keychainHelper
     }
 
-    public func load() throws(AuthenticationError) -> AuthenticationState {
+    public func load() -> AuthenticationState? {
         guard
             let accessTokenData = keychainHelper.loadData(forKey: accessTokenKey),
             let accessTokenString = String(data: accessTokenData, encoding: .utf8),
             let refreshTokenData = keychainHelper.loadData(forKey: refreshTokenKey),
             let refreshTokenString = String(data: refreshTokenData, encoding: .utf8)
-        else { throw .noStoredCredentials }
+        else { return nil }
 
         accessToken = accessTokenString
         refreshToken = refreshTokenString
 
-        // Refresh auth if expiration is not found.
-        guard
-            let expiration = UserDefaults.standard.object(forKey: expirationDateKey) as? Date
-        else { throw .tokenExpired(refreshToken: refreshTokenString) }
+        // A missing expiration date means the tokens exist but we can't prove
+        // they're still valid — surface that as an expired state so the caller
+        // refreshes, rather than treating the user as signed out.
+        let expiration = UserDefaults.standard.object(forKey: expirationDateKey) as? Date ?? .distantPast
 
         expirationDate = expiration
 
         return AuthenticationState(accessToken: accessTokenString, refreshToken: refreshTokenString, expirationDate: expiration)
     }
 
-    public func getCurrentState() throws(AuthenticationError) -> AuthenticationState {
+    public func getCurrentState() -> AuthenticationState? {
         guard
             let accessToken,
             let refreshToken,
             let expirationDate
-        else { return try load() }
-
-        guard expirationDate > .now else { throw .tokenExpired(refreshToken: refreshToken) }
+        else { return load() }
 
         return AuthenticationState(accessToken: accessToken, refreshToken: refreshToken, expirationDate: expirationDate)
     }

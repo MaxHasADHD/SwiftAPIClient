@@ -41,6 +41,11 @@ public final class AuthCoordinator: @unchecked Sendable {
     private let stateLock = NSLock()
     nonisolated(unsafe)
     private var cachedState: AuthenticationState?
+    /// Whether the cache is authoritative — set once the state has been loaded
+    /// from storage or written by a refresh, sign-in, or sign-out. Until then,
+    /// an empty cache just means "haven't looked yet," not "signed out."
+    nonisolated(unsafe)
+    private var hasLoadedInitialState = false
 
     private let refreshLock = NSLock()
     nonisolated(unsafe)
@@ -69,8 +74,18 @@ public final class AuthCoordinator: @unchecked Sendable {
         stateLock.withLock { cachedState }
     }
 
+    /// True when credentials exist, regardless of whether the access token has
+    /// expired. An expired token means "signed in, needs refresh" — the only
+    /// way back to signed-out is `signOut()` (or empty storage at load time).
     public var isSignedIn: Bool {
         cachedAuthState != nil
+    }
+
+    /// True when credentials exist but the access token is past its expiration
+    /// date. Use this to decide whether to call `performTokenRefresh` before
+    /// making authenticated requests.
+    public var isTokenExpired: Bool {
+        cachedAuthState?.isExpired ?? false
     }
 
     /// Returns true if the cached token will expire within `refreshThreshold` seconds.
@@ -86,16 +101,45 @@ public final class AuthCoordinator: @unchecked Sendable {
     /// Note: this does NOT write to `storage` — the caller is responsible for
     /// persistence if needed.
     public func updateCachedState(_ state: AuthenticationState?) {
-        stateLock.withLock { cachedState = state }
+        stateLock.withLock {
+            cachedState = state
+            hasLoadedInitialState = true
+        }
     }
 
     // MARK: - Asynchronous
 
-    /// Loads the current state from storage and populates the cache.
-    /// Call this once shortly after constructing the coordinator (typically at app start).
-    public func loadCurrentState() async throws(AuthenticationError) {
-        let state = try await storage.getCurrentState()
-        stateLock.withLock { cachedState = state }
+    /// Ensures the cache has been populated from storage at least once —
+    /// a no-op after the first load (or any explicit cache write).
+    ///
+    /// `APIClient` awaits this before attaching an Authorization header, so an
+    /// authorized request made before an explicit `loadCurrentState()` still
+    /// finds stored credentials instead of failing on a cold cache. Startup
+    /// ordering no longer matters for correctness; calling `loadCurrentState()`
+    /// at launch is still useful to get the state (e.g., for `isSignedIn` UI).
+    public func ensureLoaded() async {
+        if stateLock.withLock({ hasLoadedInitialState }) { return }
+        // Concurrent first callers may each read storage; the read is
+        // idempotent, so coalescing isn't worth the extra machinery.
+        await loadCurrentState()
+    }
+
+    /// Loads the current state from storage, populates the cache, and returns
+    /// the loaded state. Call this once shortly after constructing the
+    /// coordinator (typically at app start).
+    ///
+    /// A nil result means the user has never authenticated (or signed out).
+    /// An expired state is cached like any other: the user is still signed in,
+    /// and `isTokenExpired` / `shouldRefreshToken()` report that a refresh is
+    /// needed.
+    @discardableResult
+    public func loadCurrentState() async -> AuthenticationState? {
+        let state = await storage.getCurrentState()
+        stateLock.withLock {
+            cachedState = state
+            hasLoadedInitialState = true
+        }
+        return state
     }
 
     /// Clears storage and the in-memory cache. Any in-flight refresh is
@@ -108,7 +152,10 @@ public final class AuthCoordinator: @unchecked Sendable {
         }
         inflight?.cancel()
         await storage.clear()
-        stateLock.withLock { cachedState = nil }
+        stateLock.withLock {
+            cachedState = nil
+            hasLoadedInitialState = true
+        }
     }
 
     /// Performs (or joins) a token refresh.
@@ -140,13 +187,16 @@ public final class AuthCoordinator: @unchecked Sendable {
                     throw APIError.unauthorized
                 }
 
-                // Prefer the cached refresh token; fall back to storage when the
-                // cache is cold or the access token has already expired. Reading
-                // inside the task keeps concurrent cold callers coalesced.
-                let refreshToken = if let cached = stateLock.withLock({ cachedState?.refreshToken }) {
-                    cached
+                // Prefer the cached refresh token; fall back to storage when
+                // the cache is cold. Reading inside the task keeps concurrent
+                // cold callers coalesced.
+                let refreshToken: String
+                if let cached = stateLock.withLock({ cachedState?.refreshToken }) {
+                    refreshToken = cached
+                } else if let stored = await storage.getCurrentState()?.refreshToken {
+                    refreshToken = stored
                 } else {
-                    try await storedRefreshToken()
+                    throw APIError.unauthorized
                 }
 
                 Self.logger.info("Refreshing access token")
@@ -162,7 +212,10 @@ public final class AuthCoordinator: @unchecked Sendable {
                 try Task.checkCancellation()
 
                 await storage.updateState(newState)
-                stateLock.withLock { cachedState = newState }
+                stateLock.withLock {
+                    cachedState = newState
+                    hasLoadedInitialState = true
+                }
 
                 Self.logger.info("Token refresh successful")
                 return newState
@@ -181,17 +234,5 @@ public final class AuthCoordinator: @unchecked Sendable {
         }
 
         return try await task.value
-    }
-
-    /// The stored refresh token, tolerating an expired access token. Throws
-    /// `APIError.unauthorized` when there are no stored credentials.
-    private func storedRefreshToken() async throws -> String {
-        do {
-            return try await storage.getCurrentState().refreshToken
-        } catch AuthenticationError.tokenExpired(let refreshToken) {
-            return refreshToken
-        } catch {
-            throw APIError.unauthorized
-        }
     }
 }

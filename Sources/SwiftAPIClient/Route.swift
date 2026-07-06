@@ -77,11 +77,11 @@ public struct Route<T: Codable & Hashable & Sendable>: Sendable {
     // MARK: - Perform
 
     public func perform(retryLimit: Int = 3) async throws -> T {
-        let request = try createRequest()
+        let request = try await createRequest()
         return try await apiClient.perform(request: request, retryLimit: retryLimit)
     }
 
-    private func createRequest() throws -> URLRequest {
+    private func createRequest() async throws -> URLRequest {
         var query: [String: String] = queryItems
 
         // pagination
@@ -93,7 +93,7 @@ public struct Route<T: Codable & Hashable & Sendable>: Sendable {
             query["limit"] = limit.description
         }
 
-        return try apiClient.mutableRequest(
+        return try await apiClient.mutableRequest(
             forPath: path,
             withQuery: query,
             isAuthorized: requiresAuthentication,

@@ -31,8 +31,8 @@ final class InMemoryKeychainHelper: KeychainHelper, @unchecked Sendable {
 struct KeychainAuthenticationTests {
 
     /// Reproduces the bug where `updateState` fails to refresh the in-memory
-    /// `expirationDate`, so the next `getCurrentState()` throws `.tokenExpired`
-    /// with the brand-new refresh token even though sign-in just succeeded.
+    /// `expirationDate`, so the next `getCurrentState()` reports the brand-new
+    /// credentials as expired even though sign-in just succeeded.
     ///
     /// Scenario from production:
     /// 1. App launches, old persisted state is loaded into memory (expired date cached).
@@ -40,8 +40,7 @@ struct KeychainAuthenticationTests {
     /// 3. `updateState(newState)` writes new tokens to keychain and new date to
     ///    UserDefaults, but leaves the stale in-memory `expirationDate` alone.
     /// 4. Next `getCurrentState()` sees all three in-memory fields non-nil,
-    ///    skips `load()`, sees the old expired date, throws `.tokenExpired`
-    ///    with the *new* refresh token.
+    ///    skips `load()`, and pairs the *new* tokens with the old expired date.
     @Test("updateState refreshes the in-memory expiration date after re-authentication")
     func updateStateRefreshesInMemoryExpiration() async throws {
         let suffix = UUID().uuidString
@@ -65,7 +64,7 @@ struct KeychainAuthenticationTests {
         )
 
         // Simulate app startup: `load()` caches the expired state (including the expired date) in the actor.
-        _ = try? await auth.getCurrentState()
+        _ = await auth.getCurrentState()
 
         // User re-authenticates with a fresh token that is valid for 24h.
         let newExpiration = Date().addingTimeInterval(86_400)
@@ -76,10 +75,69 @@ struct KeychainAuthenticationTests {
         )
         await auth.updateState(newState)
 
-        // Next API call resolves auth state — should return the new state, not throw tokenExpired.
-        let current = try await auth.getCurrentState()
+        // Next API call resolves auth state — should return the new, unexpired state.
+        let current = try #require(await auth.getCurrentState())
         #expect(current.accessToken == "new-access")
         #expect(current.refreshToken == "new-refresh")
         #expect(current.expirationDate == newExpiration)
+        #expect(current.isExpired == false)
+    }
+
+    @Test("Expired credentials are returned as state, not treated as signed out")
+    func expiredCredentialsAreReturned() async throws {
+        let suffix = UUID().uuidString
+        let expirationDateKey = "test-expiration-\(suffix)"
+
+        let helper = InMemoryKeychainHelper()
+        _ = helper.setString(value: "stale-access", forKey: "test-access-\(suffix)")
+        _ = helper.setString(value: "good-refresh", forKey: "test-refresh-\(suffix)")
+        let expiredDate = Date().addingTimeInterval(-3600)
+        UserDefaults.standard.set(expiredDate, forKey: expirationDateKey)
+        defer { UserDefaults.standard.removeObject(forKey: expirationDateKey) }
+
+        let auth = KeychainAuthentication(
+            accessTokenKey: "test-access-\(suffix)",
+            refreshTokenKey: "test-refresh-\(suffix)",
+            expirationDateKey: expirationDateKey,
+            keychainHelper: helper
+        )
+
+        let state = try #require(await auth.getCurrentState())
+        #expect(state.isExpired)
+        #expect(state.refreshToken == "good-refresh")
+    }
+
+    @Test("Tokens without a stored expiration date load as an expired state")
+    func missingExpirationDateLoadsAsExpired() async throws {
+        let suffix = UUID().uuidString
+
+        // Tokens exist in the keychain but no expiration date was ever persisted.
+        let helper = InMemoryKeychainHelper()
+        _ = helper.setString(value: "access", forKey: "test-access-\(suffix)")
+        _ = helper.setString(value: "refresh", forKey: "test-refresh-\(suffix)")
+
+        let auth = KeychainAuthentication(
+            accessTokenKey: "test-access-\(suffix)",
+            refreshTokenKey: "test-refresh-\(suffix)",
+            expirationDateKey: "test-expiration-\(suffix)",
+            keychainHelper: helper
+        )
+
+        let state = try #require(await auth.getCurrentState())
+        #expect(state.isExpired)
+        #expect(state.refreshToken == "refresh")
+    }
+
+    @Test("Empty keychain returns nil state")
+    func emptyKeychainReturnsNil() async throws {
+        let suffix = UUID().uuidString
+        let auth = KeychainAuthentication(
+            accessTokenKey: "test-access-\(suffix)",
+            refreshTokenKey: "test-refresh-\(suffix)",
+            expirationDateKey: "test-expiration-\(suffix)",
+            keychainHelper: InMemoryKeychainHelper()
+        )
+
+        #expect(await auth.getCurrentState() == nil)
     }
 }

@@ -69,7 +69,7 @@ struct APIClientRequestTests {
         )
         
         // Execute
-        let request = try client.mutableRequest(
+        let request = try await client.mutableRequest(
             forPath: "users/123",
             isAuthorized: false,
             withHTTPMethod: .GET
@@ -100,7 +100,7 @@ struct APIClientRequestTests {
         )
         
         // Execute & Verify
-        let request = try client.mutableRequest(
+        let request = try await client.mutableRequest(
             forPath: "users/me",
             isAuthorized: false,
             withHTTPMethod: .GET
@@ -129,7 +129,7 @@ struct APIClientRequestTests {
         )
         
         // Execute & Verify
-        let request = try client.mutableRequest(
+        let request = try await client.mutableRequest(
             forPath: "users/nonexistent",
             isAuthorized: false,
             withHTTPMethod: .GET
@@ -158,7 +158,7 @@ struct APIClientRequestTests {
         )
         
         // Execute & Verify
-        let request = try client.mutableRequest(
+        let request = try await client.mutableRequest(
             forPath: "users/123",
             isAuthorized: false,
             withHTTPMethod: .GET
@@ -196,7 +196,7 @@ struct APIClientCustomHandlerTests {
         )
         
         // Execute & Verify
-        let request = try client.mutableRequest(
+        let request = try await client.mutableRequest(
             forPath: "teapot",
             isAuthorized: false,
             withHTTPMethod: .GET
@@ -233,7 +233,7 @@ struct APIClientCustomHandlerTests {
         )
         
         // Execute & Verify - should throw standard APIError
-        let request = try client.mutableRequest(
+        let request = try await client.mutableRequest(
             forPath: "users/123",
             isAuthorized: false,
             withHTTPMethod: .GET
@@ -272,7 +272,7 @@ struct APIClientRetryTests {
             session: mockSession.urlSession
         )
         
-        let request = try client.mutableRequest(
+        let request = try await client.mutableRequest(
             forPath: "users/123",
             isAuthorized: false,
             withHTTPMethod: .GET
@@ -318,7 +318,7 @@ struct APIClientRetryTests {
             session: mockSession.urlSession
         )
         
-        let request = try client.mutableRequest(
+        let request = try await client.mutableRequest(
             forPath: "users/123",
             isAuthorized: false,
             withHTTPMethod: .GET
@@ -356,7 +356,7 @@ struct APIClientRetryTests {
             session: mockSession.urlSession
         )
         
-        let request = try client.mutableRequest(
+        let request = try await client.mutableRequest(
             forPath: "teapot",
             isAuthorized: false,
             withHTTPMethod: .GET
@@ -378,12 +378,12 @@ struct APIClientRetryTests {
 struct APIClientConfigurationTests {
     
     @Test("Uses custom base URL")
-    func customBaseURL() throws {
+    func customBaseURL() async throws {
         let baseURL = URL(string: "https://custom.api.com/v2")!
         let configuration = APIClient.Configuration(baseURL: baseURL)
         let client = APIClient(configuration: configuration)
         
-        let request = try client.mutableRequest(
+        let request = try await client.mutableRequest(
             forPath: "users",
             isAuthorized: false,
             withHTTPMethod: .GET
@@ -393,7 +393,7 @@ struct APIClientConfigurationTests {
     }
     
     @Test("Adds additional headers")
-    func additionalHeaders() throws {
+    func additionalHeaders() async throws {
         let baseURL = URL(string: "https://api.example.com")!
         let configuration = APIClient.Configuration(
             baseURL: baseURL,
@@ -404,7 +404,7 @@ struct APIClientConfigurationTests {
         )
         let client = APIClient(configuration: configuration)
         
-        let request = try client.mutableRequest(
+        let request = try await client.mutableRequest(
             forPath: "users",
             isAuthorized: false,
             withHTTPMethod: .GET

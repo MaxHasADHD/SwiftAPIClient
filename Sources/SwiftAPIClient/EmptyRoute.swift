@@ -54,7 +54,7 @@ public struct EmptyRoute: Sendable {
     // MARK: - Perform
 
     public func perform(retryLimit: Int = 3) async throws {
-        let request = try apiClient.mutableRequest(
+        let request = try await apiClient.mutableRequest(
             forPath: path,
             withQuery: queryItems,
             isAuthorized: requiresAuthentication,

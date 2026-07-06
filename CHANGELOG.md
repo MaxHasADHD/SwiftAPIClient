@@ -5,6 +5,27 @@ All notable changes to SwiftAPIClient will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0]
+
+### Added
+- `AuthenticationState.isExpired` — expiry is now a property of the state instead of an error. An expired state means "signed in, needs refresh."
+- `AuthCoordinator.isTokenExpired` and `APIClient.isTokenExpired` — true when credentials exist but the access token is past its expiration date.
+- `AuthCoordinator.loadCurrentState()` and `APIClient.refreshCurrentAuthState()` now return the loaded `AuthenticationState?` (`@discardableResult`), so callers get the state without a follow-up `cachedAuthState` read. `nil` means the user has never authenticated (or signed out).
+
+### Added (auth lifecycle)
+- `AuthCoordinator.ensureLoaded()` — populates the cache from storage on first call, no-op afterwards. `mutableRequest` awaits it before attaching an Authorization header, so authorized requests built before an explicit `loadCurrentState()` still find stored credentials. Startup ordering no longer affects correctness.
+
+### Changed
+- **BREAKING**: `APIClient.mutableRequest(forPath:withQuery:isAuthorized:withHTTPMethod:body:)` is now `async` so it can wait for the coordinator's first storage load. Call sites add `await`.
+- Proactive token refresh moved from `perform` into `fetchData`, so `EmptyRoute` and direct `fetchData` callers refresh an expiring token before sending instead of paying a 401 round trip first.
+- **BREAKING**: `APIAuthentication.getCurrentState()` is now non-throwing and returns `AuthenticationState?`. Implementations must return whatever credentials exist — even expired ones — and return `nil` only when nothing is stored.
+- **BREAKING**: `AuthenticationError.tokenExpired` and `.noStoredCredentials` are removed. Expiry is read from `AuthenticationState.isExpired`; missing credentials are a `nil` state. `.notConfigured` (a setup error) is the only remaining case, thrown by `APIClient.refreshCurrentAuthState()` when no coordinator is set.
+- **BREAKING**: `AuthCoordinator.loadCurrentState()` no longer throws.
+- `KeychainAuthentication` returns expired credentials as state instead of throwing, and treats tokens with no persisted expiration date as an expired state (`Date.distantPast`) rather than an error.
+
+### Fixed
+- `isSignedIn` no longer reports `false` for a user whose access token has expired. Previously `loadCurrentState()` threw on expired credentials and never populated the cache, making an expired-but-authenticated user indistinguishable from one who never signed in — which could prevent clients from ever attempting a token refresh.
+
 ## [1.6.0]
 
 ### Added

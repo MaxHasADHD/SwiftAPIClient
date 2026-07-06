@@ -25,18 +25,9 @@ actor MockAuthStorage: APIAuthentication {
     var updateStateCallCount = 0
     var clearCallCount = 0
     
-    func getCurrentState() throws(AuthenticationError) -> AuthenticationState {
+    func getCurrentState() -> AuthenticationState? {
         getStateCallCount += 1
-        guard let state = currentState else {
-            throw .noStoredCredentials
-        }
-        
-        // Check if token is expired
-        guard state.expirationDate > .now else {
-            throw .tokenExpired(refreshToken: state.refreshToken)
-        }
-        
-        return state
+        return currentState
     }
     
     func updateState(_ state: AuthenticationState) {
@@ -183,7 +174,7 @@ struct TokenRefreshTests {
         await refreshHandler.setNewToken(newToken)
 
         let coordinator = AuthCoordinator(storage: authStorage, refreshHandler: refreshHandler)
-        try await coordinator.loadCurrentState()
+        await coordinator.loadCurrentState()
 
         let configuration = APIClient.Configuration(baseURL: baseURL)
         let client = APIClient(
@@ -193,7 +184,7 @@ struct TokenRefreshTests {
         )
 
         // Make an authorized request - should trigger proactive refresh
-        let request = try client.mutableRequest(
+        let request = try await client.mutableRequest(
             forPath: "users/me",
             isAuthorized: true,
             withHTTPMethod: .GET
@@ -206,7 +197,7 @@ struct TokenRefreshTests {
         #expect(result.id == "123")
 
         // Verify auth storage was updated with new token
-        let updatedState = try await authStorage.getCurrentState()
+        let updatedState = try #require(await authStorage.getCurrentState())
         #expect(updatedState.accessToken == "refreshed_access_token")
     }
 
@@ -234,7 +225,7 @@ struct TokenRefreshTests {
         await refreshHandler.setNewToken(newToken)
 
         let coordinator = AuthCoordinator(storage: authStorage, refreshHandler: refreshHandler)
-        try await coordinator.loadCurrentState()
+        await coordinator.loadCurrentState()
 
         let configuration = APIClient.Configuration(baseURL: baseURL)
         let client = APIClient(
@@ -252,7 +243,7 @@ struct TokenRefreshTests {
         await mockSession.add(mock: unauthorizedMock)
         
         // Make an authorized request
-        let request = try client.mutableRequest(
+        let request = try await client.mutableRequest(
             forPath: "users/me",
             isAuthorized: true,
             withHTTPMethod: .GET
@@ -272,7 +263,7 @@ struct TokenRefreshTests {
         #expect(await refreshHandler.refreshCallCount == 1)
         
         // Verify auth storage was updated with new token
-        let updatedState = try await authStorage.getCurrentState()
+        let updatedState = try #require(await authStorage.getCurrentState())
         #expect(updatedState.accessToken == "refreshed_access_token")
     }
     
@@ -303,7 +294,7 @@ struct TokenRefreshTests {
         let refreshHandler = MockTokenRefreshHandler()
 
         let coordinator = AuthCoordinator(storage: authStorage, refreshHandler: refreshHandler)
-        try await coordinator.loadCurrentState()
+        await coordinator.loadCurrentState()
 
         let configuration = APIClient.Configuration(baseURL: baseURL)
         let client = APIClient(
@@ -313,7 +304,7 @@ struct TokenRefreshTests {
         )
 
         // Make an authorized request
-        let request = try client.mutableRequest(
+        let request = try await client.mutableRequest(
             forPath: "users/me",
             isAuthorized: true,
             withHTTPMethod: .GET
@@ -353,7 +344,7 @@ struct TokenRefreshTests {
         await refreshHandler.setShouldFail(true)
 
         let coordinator = AuthCoordinator(storage: authStorage, refreshHandler: refreshHandler)
-        try await coordinator.loadCurrentState()
+        await coordinator.loadCurrentState()
 
         let configuration = APIClient.Configuration(baseURL: baseURL)
         let client = APIClient(
@@ -363,7 +354,7 @@ struct TokenRefreshTests {
         )
         
         // Make an authorized request - should fail after refresh attempt
-        let request = try client.mutableRequest(
+        let request = try await client.mutableRequest(
             forPath: "users/me",
             isAuthorized: true,
             withHTTPMethod: .GET
@@ -411,7 +402,7 @@ struct TokenRefreshTests {
         await refreshHandler.setRefreshDelay(0.1) // 100ms delay
 
         let coordinator = AuthCoordinator(storage: authStorage, refreshHandler: refreshHandler)
-        try await coordinator.loadCurrentState()
+        await coordinator.loadCurrentState()
 
         let configuration = APIClient.Configuration(baseURL: baseURL)
         let client = APIClient(
@@ -421,7 +412,7 @@ struct TokenRefreshTests {
         )
 
         // Make 5 concurrent requests - all should trigger proactive refresh
-        let request = try client.mutableRequest(
+        let request = try await client.mutableRequest(
             forPath: "users/me",
             isAuthorized: true,
             withHTTPMethod: .GET
@@ -445,7 +436,7 @@ struct TokenRefreshTests {
         #expect(await refreshHandler.refreshCallCount == 1)
         
         // Verify auth storage was updated
-        let updatedState = try await authStorage.getCurrentState()
+        let updatedState = try #require(await authStorage.getCurrentState())
         #expect(updatedState.accessToken == "refreshed_access_token")
     }
     
@@ -482,7 +473,7 @@ struct TokenRefreshTests {
         await refreshHandler.setNewToken(newToken)
 
         let coordinator = AuthCoordinator(storage: authStorage, refreshHandler: refreshHandler)
-        try await coordinator.loadCurrentState()
+        await coordinator.loadCurrentState()
 
         let configuration = APIClient.Configuration(baseURL: baseURL)
         let client = APIClient(
@@ -492,7 +483,7 @@ struct TokenRefreshTests {
         )
 
         // Create request with old token
-        let request = try client.mutableRequest(
+        let request = try await client.mutableRequest(
             forPath: "users/me",
             isAuthorized: true,
             withHTTPMethod: .GET
@@ -537,7 +528,7 @@ struct TokenRefreshTests {
         await refreshHandler.setRefreshDelay(0.1) // 100ms delay
 
         let coordinator = AuthCoordinator(storage: authStorage, refreshHandler: refreshHandler)
-        try await coordinator.loadCurrentState()
+        await coordinator.loadCurrentState()
 
         let configuration = APIClient.Configuration(baseURL: baseURL)
         let client = APIClient(
@@ -555,7 +546,7 @@ struct TokenRefreshTests {
         await mockSession.add(mock: unauthorizedMock)
         
         // Make 3 concurrent requests that will all get 401
-        let request = try client.mutableRequest(
+        let request = try await client.mutableRequest(
             forPath: "users/me",
             isAuthorized: true,
             withHTTPMethod: .GET
@@ -610,7 +601,7 @@ struct TokenRefreshTests {
         await refreshHandler.setRefreshDelay(0.05) // 50ms delay - small window to expose race
 
         let coordinator = AuthCoordinator(storage: authStorage, refreshHandler: refreshHandler)
-        try await coordinator.loadCurrentState()
+        await coordinator.loadCurrentState()
 
         let configuration = APIClient.Configuration(baseURL: baseURL)
         let client = APIClient(
@@ -620,7 +611,7 @@ struct TokenRefreshTests {
         )
         
         // Make 20 concurrent requests to maximize chances of hitting race condition
-        let request = try client.mutableRequest(
+        let request = try await client.mutableRequest(
             forPath: "users/me",
             isAuthorized: true,
             withHTTPMethod: .GET
@@ -645,7 +636,7 @@ struct TokenRefreshTests {
         #expect(count == 1, "Expected 1 refresh, but got \(count)")
         
         // Verify auth storage was updated
-        let updatedState = try await authStorage.getCurrentState()
+        let updatedState = try #require(await authStorage.getCurrentState())
         #expect(updatedState.accessToken == "refreshed_access_token")
     }
     
@@ -691,7 +682,7 @@ struct TokenRefreshTests {
         actor RealWorldTokenRefreshHandler: TokenRefreshHandler {
             func refreshToken(using refreshToken: String, client: APIClient) async throws -> AuthenticationState {
                 // This is how a real implementation would work - make an API call to refresh
-                let request = try client.mutableRequest(
+                let request = try await client.mutableRequest(
                     forPath: "oauth/token",
                     isAuthorized: false, // Unauthenticated request!
                     withHTTPMethod: .POST
@@ -710,7 +701,7 @@ struct TokenRefreshTests {
         let refreshHandler = RealWorldTokenRefreshHandler()
 
         let coordinator = AuthCoordinator(storage: authStorage, refreshHandler: refreshHandler)
-        try await coordinator.loadCurrentState()
+        await coordinator.loadCurrentState()
 
         let configuration = APIClient.Configuration(baseURL: baseURL)
         let client = APIClient(
@@ -720,7 +711,7 @@ struct TokenRefreshTests {
         )
 
         // Make an authenticated request - will trigger proactive refresh
-        let request = try client.mutableRequest(
+        let request = try await client.mutableRequest(
             forPath: "users/me",
             isAuthorized: true,
             withHTTPMethod: .GET
@@ -787,7 +778,7 @@ struct TokenRefreshTests {
         // Create a token refresh handler that uses client.perform() for refresh
         actor RealWorldTokenRefreshHandler: TokenRefreshHandler {
             func refreshToken(using refreshToken: String, client: APIClient) async throws -> AuthenticationState {
-                let request = try client.mutableRequest(
+                let request = try await client.mutableRequest(
                     forPath: "oauth/token",
                     isAuthorized: false, // Unauthenticated request!
                     withHTTPMethod: .POST
@@ -807,7 +798,7 @@ struct TokenRefreshTests {
         let refreshHandler = RealWorldTokenRefreshHandler()
 
         let coordinator = AuthCoordinator(storage: authStorage, refreshHandler: refreshHandler)
-        try await coordinator.loadCurrentState()
+        await coordinator.loadCurrentState()
 
         let configuration = APIClient.Configuration(baseURL: baseURL)
         let client = APIClient(
@@ -817,7 +808,7 @@ struct TokenRefreshTests {
         )
 
         // Make an authenticated request - will trigger proactive refresh
-        let request = try client.mutableRequest(
+        let request = try await client.mutableRequest(
             forPath: "users/me",
             isAuthorized: true,
             withHTTPMethod: .GET
@@ -832,6 +823,99 @@ struct TokenRefreshTests {
         } catch {
             Issue.record("Unexpected error: \(error)")
         }
+    }
+}
+
+// MARK: - Proactive refresh in fetchData
+
+/// Proactive refresh lives in `fetchData`, so every request path gets it —
+/// including `EmptyRoute` and direct `fetchData` callers, which previously
+/// only had the reactive 401 path.
+@Suite("Proactive refresh in fetchData")
+struct FetchDataProactiveRefreshTests {
+
+    let baseURL = URL(string: "https://api.example.com")!
+
+    private func makeExpiringSetup() async throws -> (MockSession, AuthCoordinator, MockTokenRefreshHandler) {
+        let mockSession = MockSession()
+
+        let authStorage = MockAuthStorage()
+        await authStorage.updateState(AuthenticationState(
+            accessToken: "old_access_token",
+            refreshToken: "old_refresh_token",
+            expirationDate: Date().addingTimeInterval(120) // within default threshold
+        ))
+
+        let refreshHandler = MockTokenRefreshHandler()
+        await refreshHandler.setNewToken(TokenResponse(
+            accessToken: "refreshed_access_token",
+            refreshToken: "new_refresh_token",
+            expiresIn: 3600
+        ))
+
+        let coordinator = AuthCoordinator(storage: authStorage, refreshHandler: refreshHandler)
+        await coordinator.loadCurrentState()
+
+        return (mockSession, coordinator, refreshHandler)
+    }
+
+    @Test("Direct fetchData proactively refreshes an expiring token")
+    func fetchDataProactiveRefresh() async throws {
+        let (mockSession, coordinator, refreshHandler) = try await makeExpiringSetup()
+
+        // 200 only for the refreshed token — proves the outgoing request
+        // carried the new Authorization header, not just that a refresh ran.
+        let okForNew = try RequestMocking.MockedResponse(
+            urlString: "https://api.example.com/ping",
+            result: .success(Data("{}".utf8)),
+            httpCode: 200,
+            requestMatcher: { $0.value(forHTTPHeaderField: "Authorization") == "Bearer refreshed_access_token" }
+        )
+        await mockSession.add(mock: okForNew)
+
+        let client = APIClient(
+            configuration: APIClient.Configuration(baseURL: baseURL),
+            session: mockSession.urlSession,
+            authCoordinator: coordinator
+        )
+
+        let request = try await client.mutableRequest(
+            forPath: "ping",
+            isAuthorized: true,
+            withHTTPMethod: .GET
+        )
+        _ = try await client.fetchData(request: request)
+
+        #expect(await refreshHandler.refreshCallCount == 1)
+    }
+
+    @Test("EmptyRoute proactively refreshes an expiring token")
+    func emptyRouteProactiveRefresh() async throws {
+        let (mockSession, coordinator, refreshHandler) = try await makeExpiringSetup()
+
+        let okForNew = try RequestMocking.MockedResponse(
+            urlString: "https://api.example.com/checkin",
+            result: .success(Data()),
+            httpCode: 200,
+            requestMatcher: { $0.value(forHTTPHeaderField: "Authorization") == "Bearer refreshed_access_token" }
+        )
+        await mockSession.add(mock: okForNew)
+
+        let client = APIClient(
+            configuration: APIClient.Configuration(baseURL: baseURL),
+            session: mockSession.urlSession,
+            authCoordinator: coordinator
+        )
+
+        let route = EmptyRoute(
+            path: "checkin",
+            method: .POST,
+            requiresAuthentication: true,
+            apiClient: client
+        )
+        try await route.perform()
+
+        #expect(await refreshHandler.refreshCallCount == 1)
     }
 }
 
@@ -897,7 +981,7 @@ struct DeprecatedAuthStorageInitTests {
         )
         try await client.refreshCurrentAuthState()
 
-        let request = try client.mutableRequest(
+        let request = try await client.mutableRequest(
             forPath: "users/me",
             isAuthorized: true,
             withHTTPMethod: .GET

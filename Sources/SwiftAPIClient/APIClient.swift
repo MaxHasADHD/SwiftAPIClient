@@ -105,20 +105,34 @@ open class APIClient: @unchecked Sendable {
 
     // MARK: - Authentication
 
-    /// Returns true if the coordinator has a cached auth state.
+    /// Returns true if the coordinator has a cached auth state — even an
+    /// expired one, since an expired token still represents a signed-in user.
     /// Returns false if no coordinator is configured or the cache is empty.
     public var isSignedIn: Bool {
         authCoordinator?.isSignedIn ?? false
     }
 
+    /// True when credentials exist but the access token is past its expiration
+    /// date, meaning a token refresh is needed before authenticated requests
+    /// will succeed. Returns false if no coordinator is configured.
+    public var isTokenExpired: Bool {
+        authCoordinator?.isTokenExpired ?? false
+    }
+
     /**
-     Loads the current authentication state from the coordinator's storage and
-     populates its cache. Call this once shortly after initializing the client
-     when an `authCoordinator` is configured.
+     Loads the current authentication state from the coordinator's storage,
+     populates its cache, and returns the loaded state. Call this once shortly
+     after initializing the client when an `authCoordinator` is configured.
+
+     A nil result means the user has never authenticated (or signed out); an
+     expired state means signed in but needing a token refresh.
+
+     - Throws: `AuthenticationError.notConfigured` if no coordinator is set.
      */
-    public func refreshCurrentAuthState() async throws(AuthenticationError) {
+    @discardableResult
+    public func refreshCurrentAuthState() async throws(AuthenticationError) -> AuthenticationState? {
         guard let authCoordinator else { throw .notConfigured }
-        try await authCoordinator.loadCurrentState()
+        return await authCoordinator.loadCurrentState()
     }
 
     /**
@@ -137,13 +151,18 @@ open class APIClient: @unchecked Sendable {
 
     // MARK: - Request Building
 
+    /// Builds a request for the given path. For authorized requests, waits for
+    /// the coordinator's first storage load if it hasn't happened yet, so a
+    /// request built early in the app's lifetime still finds stored
+    /// credentials. Throws `APIClientError.userNotAuthorized` only when no
+    /// credentials exist at all (never authenticated, or signed out).
     public func mutableRequest(
         forPath path: String,
         withQuery query: [String: String] = [:],
         isAuthorized authorized: Bool,
         withHTTPMethod httpMethod: Method,
         body: Encodable? = nil
-    ) throws -> URLRequest {
+    ) async throws -> URLRequest {
         // Build URL
         guard var components = URLComponents(url: configuration.baseURL, resolvingAgainstBaseURL: false) else {
             throw APIClientError.malformedURL
@@ -179,6 +198,9 @@ open class APIClient: @unchecked Sendable {
         }
 
         if authorized {
+            // Make sure a cold cache reflects storage before concluding the
+            // user isn't signed in — no-op after the first load.
+            await authCoordinator?.ensureLoaded()
             if let accessToken = authCoordinator?.cachedAuthState?.accessToken {
                 request.addValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
             } else {
@@ -203,7 +225,8 @@ open class APIClient: @unchecked Sendable {
     // MARK: - Perform Requests
 
     /**
-     Downloads the contents of a URL based on the specified URL request. Handles ``APIError/retry(after:)`` up to the specified `retryLimit`
+     Downloads the contents of a URL based on the specified URL request. Handles ``APIError/retry(after:)`` up to the specified `retryLimit`.
+     Proactively refreshes the token before sending when it is about to expire (authenticated requests only).
 
      - Note: This method can throw any error type defined by your `ResponseHandler`. The automatic retry functionality
              only applies to `APIError.retry(after:)` errors and automatic token refresh for 401 errors.
@@ -213,6 +236,21 @@ open class APIClient: @unchecked Sendable {
         var tokenRefreshAttempted = false
         var cachedTokenShortcutTried = false
         var currentRequest = request
+
+        // Only check for token refresh if this is an authenticated request.
+        // This prevents deadlock when the refresh handler uses this client for
+        // its own (unauthenticated) refresh request.
+        let isAuthenticatedRequest = request.value(forHTTPHeaderField: "Authorization") != nil
+
+        if isAuthenticatedRequest, let coordinator = authCoordinator, coordinator.shouldRefreshToken() {
+            Self.logger.info("Token expires soon, proactively refreshing")
+            try await coordinator.performTokenRefresh(client: self)
+
+            // Update the Authorization header with the new token
+            if let newAccessToken = coordinator.cachedAuthState?.accessToken {
+                currentRequest.setValue("Bearer \(newAccessToken)", forHTTPHeaderField: "Authorization")
+            }
+        }
 
         while true {
             do {
@@ -289,26 +327,10 @@ open class APIClient: @unchecked Sendable {
 
     /**
      Downloads the contents of a URL based on the specified URL request, and decodes the data into an API object.
-     Proactively refreshes tokens if they are about to expire before making the request.
+     Token refresh (proactive and 401-triggered) is handled by `fetchData`.
      */
     public func perform<T: Codable & Hashable & Sendable>(request: URLRequest, retryLimit: Int = 3) async throws -> T {
-        var finalRequest = request
-
-        // Only check for token refresh if this is an authenticated request
-        // This prevents deadlock when the refresh handler uses client.perform() for unauthenticated requests
-        let isAuthenticatedRequest = request.value(forHTTPHeaderField: "Authorization") != nil
-
-        if isAuthenticatedRequest, let coordinator = authCoordinator, coordinator.shouldRefreshToken() {
-            Self.logger.info("Token expires soon, proactively refreshing")
-            try await coordinator.performTokenRefresh(client: self)
-
-            // Update the Authorization header with the new token
-            if let newAccessToken = coordinator.cachedAuthState?.accessToken {
-                finalRequest.setValue("Bearer \(newAccessToken)", forHTTPHeaderField: "Authorization")
-            }
-        }
-
-        let (data, response) = try await fetchData(request: finalRequest, retryLimit: retryLimit)
+        let (data, response) = try await fetchData(request: request, retryLimit: retryLimit)
         return try decodeObject(from: data, response: response)
     }
 

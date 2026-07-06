@@ -26,7 +26,7 @@ struct AuthCoordinatorTests {
         #expect(coordinator.shouldRefreshToken() == false)
     }
 
-    @Test("loadCurrentState populates cache from storage")
+    @Test("loadCurrentState populates cache from storage and returns the state")
     func loadCurrentStatePopulatesCache() async throws {
         let storage = MockAuthStorage()
         let state = AuthenticationState(
@@ -37,10 +37,33 @@ struct AuthCoordinatorTests {
         await storage.updateState(state)
 
         let coordinator = AuthCoordinator(storage: storage)
-        try await coordinator.loadCurrentState()
+        let loaded = await coordinator.loadCurrentState()
 
+        #expect(loaded?.accessToken == "access")
         #expect(coordinator.isSignedIn)
+        #expect(coordinator.isTokenExpired == false)
         #expect(coordinator.cachedAuthState?.accessToken == "access")
+    }
+
+    @Test("An expired state still counts as signed in and reports needing refresh")
+    func expiredStateIsSignedInAndNeedsRefresh() async throws {
+        let storage = MockAuthStorage()
+        let expiredState = AuthenticationState(
+            accessToken: "stale-access",
+            refreshToken: "still-good-refresh",
+            expirationDate: Date().addingTimeInterval(-3600) // expired an hour ago
+        )
+        await storage.updateState(expiredState)
+
+        let coordinator = AuthCoordinator(storage: storage)
+        let loaded = await coordinator.loadCurrentState()
+
+        // The user authenticated at some point — expiry doesn't sign them out.
+        #expect(loaded?.isExpired == true)
+        #expect(coordinator.isSignedIn)
+        #expect(coordinator.isTokenExpired)
+        #expect(coordinator.shouldRefreshToken())
+        #expect(coordinator.cachedAuthState?.refreshToken == "still-good-refresh")
     }
 
     @Test("refreshCurrentAuthState throws notConfigured when the client has no coordinator")
@@ -52,15 +75,16 @@ struct AuthCoordinatorTests {
         }
     }
 
-    @Test("loadCurrentState propagates noStoredCredentials")
-    func loadCurrentStatePropagatesError() async throws {
+    @Test("loadCurrentState returns nil when storage is empty")
+    func loadCurrentStateReturnsNilForEmptyStorage() async throws {
         let storage = MockAuthStorage()
         let coordinator = AuthCoordinator(storage: storage)
 
-        await #expect(throws: AuthenticationError.noStoredCredentials) {
-            try await coordinator.loadCurrentState()
-        }
+        let loaded = await coordinator.loadCurrentState()
+
+        #expect(loaded == nil)
         #expect(coordinator.isSignedIn == false)
+        #expect(coordinator.isTokenExpired == false)
     }
 
     @Test("updateCachedState writes the cache without touching storage")
@@ -90,7 +114,7 @@ struct AuthCoordinatorTests {
         await storage.updateState(state)
 
         let coordinator = AuthCoordinator(storage: storage)
-        try await coordinator.loadCurrentState()
+        await coordinator.loadCurrentState()
         #expect(coordinator.isSignedIn)
 
         await coordinator.signOut()
@@ -162,7 +186,7 @@ struct AuthCoordinatorTests {
         ))
 
         let coordinator = AuthCoordinator(storage: storage, refreshHandler: handler)
-        try await coordinator.loadCurrentState()
+        await coordinator.loadCurrentState()
 
         let configuration = APIClient.Configuration(baseURL: baseURL)
         let client = APIClient(configuration: configuration, authCoordinator: coordinator)
@@ -171,7 +195,7 @@ struct AuthCoordinatorTests {
 
         #expect(newState.accessToken == "new")
         #expect(coordinator.cachedAuthState?.accessToken == "new")
-        let storageState = try await storage.getCurrentState()
+        let storageState = try #require(await storage.getCurrentState())
         #expect(storageState.accessToken == "new")
     }
 
@@ -198,7 +222,7 @@ struct AuthCoordinatorTests {
         #expect(newState.accessToken == "new")
         #expect(await handler.lastRefreshToken == "old-rt")
         #expect(coordinator.cachedAuthState?.accessToken == "new")
-        let storageState = try await storage.getCurrentState()
+        let storageState = try #require(await storage.getCurrentState())
         #expect(storageState.accessToken == "new")
     }
 
@@ -254,7 +278,7 @@ struct AuthCoordinatorTests {
         await handler.setRefreshDelay(0.1)
 
         let coordinator = AuthCoordinator(storage: storage, refreshHandler: handler)
-        try await coordinator.loadCurrentState()
+        await coordinator.loadCurrentState()
 
         let configuration = APIClient.Configuration(baseURL: baseURL)
         let client = APIClient(configuration: configuration, authCoordinator: coordinator)
@@ -282,7 +306,7 @@ struct AuthCoordinatorTests {
 
         let handler = MockTokenRefreshHandler()
         let coordinator = AuthCoordinator(storage: storage, refreshHandler: handler)
-        try await coordinator.loadCurrentState()
+        await coordinator.loadCurrentState()
 
         let configuration = APIClient.Configuration(baseURL: baseURL)
         let client = APIClient(configuration: configuration, authCoordinator: coordinator)
@@ -309,7 +333,7 @@ struct AuthCoordinatorTests {
         await handler.setShouldFail(true)
 
         let coordinator = AuthCoordinator(storage: storage, refreshHandler: handler)
-        try await coordinator.loadCurrentState()
+        await coordinator.loadCurrentState()
 
         let configuration = APIClient.Configuration(baseURL: baseURL)
         let client = APIClient(configuration: configuration, authCoordinator: coordinator)
@@ -367,7 +391,7 @@ struct AuthCoordinatorTests {
         await handler.setRefreshDelay(0.05) // small window to expose any race
 
         let sharedCoordinator = AuthCoordinator(storage: storage, refreshHandler: handler)
-        try await sharedCoordinator.loadCurrentState()
+        await sharedCoordinator.loadCurrentState()
 
         // Two clients with independent URLSession instances but the same coordinator —
         // models the "isolated network resources, shared auth state" use case.
@@ -383,7 +407,7 @@ struct AuthCoordinatorTests {
             authCoordinator: sharedCoordinator
         )
 
-        let request = try clientA.mutableRequest(
+        let request = try await clientA.mutableRequest(
             forPath: "users/me",
             isAuthorized: true,
             withHTTPMethod: .GET
@@ -416,7 +440,7 @@ struct AuthCoordinatorTests {
         ))
 
         let coordinator = AuthCoordinator(storage: storage)
-        try await coordinator.loadCurrentState()
+        await coordinator.loadCurrentState()
 
         let configuration = APIClient.Configuration(baseURL: baseURL)
         let clientA = APIClient(configuration: configuration, authCoordinator: coordinator)
@@ -447,7 +471,7 @@ struct AuthCoordinatorTests {
         await handler.setRefreshDelay(0.3)
 
         let coordinator = AuthCoordinator(storage: storage, refreshHandler: handler)
-        try await coordinator.loadCurrentState()
+        await coordinator.loadCurrentState()
 
         let configuration = APIClient.Configuration(baseURL: baseURL)
         let client = APIClient(configuration: configuration, authCoordinator: coordinator)
@@ -472,9 +496,7 @@ struct AuthCoordinatorTests {
         #expect(coordinator.cachedAuthState == nil)
         #expect(coordinator.isSignedIn == false)
         // Storage should not have been updated with the refreshed token.
-        await #expect(throws: AuthenticationError.noStoredCredentials) {
-            _ = try await storage.getCurrentState()
-        }
+        #expect(await storage.getCurrentState() == nil)
         // The in-flight refresh saw its task get cancelled and rethrew.
         #expect(refreshThrew)
     }
@@ -497,7 +519,7 @@ struct AuthCoordinatorTests {
         ))
 
         let coordinator = AuthCoordinator(storage: storage, refreshHandler: handler)
-        try await coordinator.loadCurrentState()
+        await coordinator.loadCurrentState()
 
         let configuration = APIClient.Configuration(baseURL: baseURL)
         let client = APIClient(
@@ -508,7 +530,7 @@ struct AuthCoordinatorTests {
 
         // Build the request now, while the cache still holds "old" —
         // mutableRequest snapshots the cached token into the header.
-        let request = try client.mutableRequest(
+        let request = try await client.mutableRequest(
             forPath: "users/me",
             isAuthorized: true,
             withHTTPMethod: .GET
@@ -549,5 +571,71 @@ struct AuthCoordinatorTests {
         #expect(result.id == "1")
         // The shortcut handled it — no refresh handler invocation.
         #expect(await handler.refreshCallCount == 0)
+    }
+
+    // MARK: - Lazy ensure-loaded (cold cache)
+
+    @Test("Authorized request builds from storage without an explicit load")
+    func mutableRequestLoadsColdCacheFromStorage() async throws {
+        let storage = MockAuthStorage()
+        await storage.updateState(AuthenticationState(
+            accessToken: "stored-access",
+            refreshToken: "stored-rt",
+            expirationDate: Date().addingTimeInterval(3600)
+        ))
+
+        // Note: loadCurrentState() / refreshCurrentAuthState() intentionally
+        // NOT called — this is the "app forgot the startup load" scenario.
+        let coordinator = AuthCoordinator(storage: storage)
+        let client = APIClient(
+            configuration: APIClient.Configuration(baseURL: baseURL),
+            authCoordinator: coordinator
+        )
+        #expect(coordinator.cachedAuthState == nil)
+
+        let request = try await client.mutableRequest(
+            forPath: "users/me",
+            isAuthorized: true,
+            withHTTPMethod: .GET
+        )
+
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer stored-access")
+        // The build also warmed the cache as a side effect.
+        #expect(client.isSignedIn)
+    }
+
+    @Test("Authorized request with empty storage still throws userNotAuthorized")
+    func mutableRequestEmptyStorageThrows() async throws {
+        let coordinator = AuthCoordinator(storage: MockAuthStorage())
+        let client = APIClient(
+            configuration: APIClient.Configuration(baseURL: baseURL),
+            authCoordinator: coordinator
+        )
+
+        await #expect(throws: APIClientError.self) {
+            _ = try await client.mutableRequest(
+                forPath: "users/me",
+                isAuthorized: true,
+                withHTTPMethod: .GET
+            )
+        }
+    }
+
+    @Test("ensureLoaded does not clobber state injected via updateCachedState")
+    func ensureLoadedRespectsInjectedState() async throws {
+        // Storage is stale/empty, but the app just completed OAuth sign-in and
+        // pushed fresh credentials straight into the cache.
+        let coordinator = AuthCoordinator(storage: MockAuthStorage())
+        coordinator.updateCachedState(AuthenticationState(
+            accessToken: "fresh-from-oauth",
+            refreshToken: "rt",
+            expirationDate: Date().addingTimeInterval(3600)
+        ))
+
+        await coordinator.ensureLoaded()
+
+        // ensureLoaded must treat the explicit write as authoritative and not
+        // re-read (empty) storage over it.
+        #expect(coordinator.cachedAuthState?.accessToken == "fresh-from-oauth")
     }
 }

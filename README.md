@@ -48,8 +48,12 @@ let client = APIClient(
     authCoordinator: coordinator
 )
 
-// Load the cached state from storage once at startup.
-try await client.refreshCurrentAuthState()
+// Optionally load the auth state at startup (e.g., to drive sign-in UI).
+// nil means the user has never authenticated; a returned state may be
+// expired (`state.isExpired`) — still signed in, just needing a refresh.
+// Authorized requests load from storage lazily, so this call is not
+// required for requests to work.
+let state = try await client.refreshCurrentAuthState()
 ```
 
 > If you only call unauthenticated endpoints, omit `authCoordinator` entirely.
@@ -144,7 +148,7 @@ You can also build requests directly without Routes:
 
 ```swift
 do {
-    let request = try client.mutableRequest(
+    let request = try await client.mutableRequest(
         forPath: "users/123",
         isAuthorized: false,
         withHTTPMethod: .GET
@@ -278,7 +282,7 @@ coordinator.updateCachedState(authState)
 let client = APIClient(configuration: configuration, authCoordinator: coordinator)
 
 // 3. Make authenticated requests
-let request = try client.mutableRequest(
+let request = try await client.mutableRequest(
     forPath: "users/settings",
     isAuthorized: true,
     withHTTPMethod: .GET
@@ -297,7 +301,7 @@ Concurrent refresh attempts (across requests *and* across clients sharing the co
 ```swift
 struct OAuthRefreshHandler: TokenRefreshHandler {
     func refreshToken(using refreshToken: String, client: APIClient) async throws -> AuthenticationState {
-        let request = try client.mutableRequest(
+        let request = try await client.mutableRequest(
             forPath: "oauth/token",
             isAuthorized: false, // refresh endpoint is unauthenticated
             withHTTPMethod: .POST,
@@ -328,7 +332,7 @@ let coordinator = AuthCoordinator(
     storage: KeychainAuthentication(serviceName: "com.example.app"),
     refreshHandler: OAuthRefreshHandler()
 )
-try await coordinator.loadCurrentState()
+await coordinator.loadCurrentState()
 
 let interactiveClient = APIClient(
     configuration: configuration,

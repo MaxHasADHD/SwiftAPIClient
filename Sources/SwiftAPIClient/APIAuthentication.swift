@@ -10,6 +10,12 @@ public struct AuthenticationState: Sendable {
     public let refreshToken: String
     public let expirationDate: Date
 
+    /// Whether the access token is past its expiration date. An expired state
+    /// still represents a signed-in user — it just needs a token refresh.
+    public var isExpired: Bool {
+        expirationDate <= .now
+    }
+
     public init(accessToken: String, refreshToken: String, expirationDate: Date) {
         self.accessToken = accessToken
         self.refreshToken = refreshToken
@@ -18,18 +24,18 @@ public struct AuthenticationState: Sendable {
 }
 
 public enum AuthenticationError: Error, Equatable {
-    /// Token was found, but is past the expiration date.
-    case tokenExpired(refreshToken: String)
-    /// Thrown if credentials could not be retrieved.
-    case noStoredCredentials
     /// The client has no `AuthCoordinator` configured — a setup error, distinct
-    /// from the user simply having no stored credentials.
+    /// from the user simply having no stored credentials (a `nil` state).
     case notConfigured
 }
 
 public protocol APIAuthentication: Sendable {
-    /// Returns the current access token, refresh token, and expiration date.
-    func getCurrentState() async throws(AuthenticationError) -> AuthenticationState
+    /// Returns the stored credentials, or nil when the user has never
+    /// authenticated (or has signed out). Expiration is not an error and not
+    /// nil: implementations must return whatever credentials exist — even
+    /// expired ones. Callers check `AuthenticationState.isExpired` to decide
+    /// whether a refresh is needed.
+    func getCurrentState() async -> AuthenticationState?
     /// Store the latest state
     func updateState(_ state: AuthenticationState) async
     /// Delete the data
