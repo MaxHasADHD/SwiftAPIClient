@@ -70,6 +70,42 @@ public struct PaginationInfo: Sendable, Hashable {
     }
 }
 
+/// The outcome of `Route.fetchAllPages`: every item that was fetched, plus
+/// which pages (if any) could not be.
+///
+/// A partial result only exists once at least one page has succeeded — if the
+/// first page fails, `fetchAllPages` throws instead. Check `isComplete` (or
+/// `failedPages`) before treating `items` as the full data set.
+public struct PagedFetchResult<Element: Hashable & Sendable>: Sendable {
+    /// A page that could not be fetched, and why.
+    public struct PageFailure: Sendable {
+        public let page: Int
+        public let error: any Error
+
+        public init(page: Int, error: any Error) {
+            self.page = page
+            self.error = error
+        }
+    }
+
+    /// All items from the pages that succeeded.
+    public let items: Set<Element>
+    /// Pages that failed after exhausting their retries, in page order.
+    /// Empty when the fetch is complete.
+    public let failedPages: [PageFailure]
+    /// The total number of pages the fetch attempted, as reported by the server.
+    public let totalPages: Int
+
+    /// True when every page was fetched successfully.
+    public var isComplete: Bool { failedPages.isEmpty }
+
+    public init(items: Set<Element>, failedPages: [PageFailure], totalPages: Int) {
+        self.items = items
+        self.failedPages = failedPages
+        self.totalPages = totalPages
+    }
+}
+
 public struct PagedObject<APIModel: Codable & Hashable & Sendable>: PagedObjectProtocol, Codable, Hashable, Sendable {
     public let object: APIModel
     public let currentPage: Int

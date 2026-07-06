@@ -373,7 +373,19 @@ let page = try await client.listUsers().limit(100).page(1).perform()
 print("Page \(page.currentPage) of \(page.pageCount): \(page.object.count) users")
 
 // All pages at once (concurrent, deduplicated via Set)
-let allUsers: Set<User> = try await client.listUsers().limit(100).fetchAllPages()
+let result: PagedFetchResult<User> = try await client.listUsers().limit(100).fetchAllPages()
+let allUsers = result.items
+
+// A page failing mid-fetch doesn't silently truncate the data set — the
+// partial result reports exactly which pages are missing. (A first-page
+// failure throws instead: nothing was fetched.)
+if !result.isComplete {
+    print("Missing pages: \(result.failedPages.map(\.page)) of \(result.totalPages)")
+}
+
+// Against APIs with long rate-limit cooldowns (Trakt waits 5 minutes),
+// pass retryLimit: 0 to fail fast instead of sleeping out the cooldown.
+let fastFail = try await client.listUsers().limit(100).fetchAllPages(retryLimit: 0)
 
 // Streamed page-by-page
 for try await batch in client.listUsers().limit(100).pagedResults() {

@@ -152,21 +152,46 @@ extension Route where T: PagedObjectProtocol {
         return firstPage.pageCount
     }
 
-    /// Fetches all pages for a paginated endpoint, and returns the data in a Set.
+    /// Fetches all pages for a paginated endpoint.
+    ///
+    /// Failure semantics:
+    /// - If the **first page** fails, nothing was fetched — the error is thrown
+    ///   and the whole request is considered failed.
+    /// - If a **later page** fails, the remaining pages are still fetched and
+    ///   the failure is reported in `PagedFetchResult.failedPages` alongside
+    ///   the partial `items`, so callers can tell 15-of-20 pages apart from a
+    ///   complete result (check `isComplete`).
+    ///
+    /// `retryLimit` is forwarded to every page request. Pass `0` to fail fast
+    /// instead of honoring `retry-after` waits — useful against APIs with long
+    /// rate-limit cooldowns (e.g. Trakt's 5 minutes) where waiting inline is
+    /// worse than surfacing the failure.
     ///
     /// Uses `itemCount` / `limit` from response headers when available to compute
     /// the true page count (defends against servers downgrading the requested
     /// page size). Falls back to `pageCount` when those headers aren't present.
-    public func fetchAllPages<Element>(maxConcurrentRequests preferredMaxConcurrentRequests: Int = 5) async throws -> Set<Element> where T.Type == PagedObject<[Element]>.Type {
-        // Fetch first page
-        let firstPage = try await self.page(1).perform()
+    public func fetchAllPages<Element>(
+        maxConcurrentRequests preferredMaxConcurrentRequests: Int = 5,
+        retryLimit: Int = 3
+    ) async throws -> PagedFetchResult<Element> where T.Type == PagedObject<[Element]>.Type {
+        // Fetch first page. A failure here propagates: with zero pages fetched
+        // there is no partial result worth returning.
+        let firstPage = try await self.page(1).perform(retryLimit: retryLimit)
         var resultSet = Set<Element>(firstPage.object)
 
         let totalPages = Self.effectivePageCount(from: firstPage)
 
         // Return early if there's only one page
-        guard totalPages > 1 else { return resultSet }
-        resultSet = await withTaskGroup(of: [Element].self, returning: Set<Element>.self) { group in
+        guard totalPages > 1 else {
+            return PagedFetchResult(items: resultSet, failedPages: [], totalPages: max(totalPages, 1))
+        }
+
+        var failedPages: [PagedFetchResult<Element>.PageFailure] = []
+
+        (resultSet, failedPages) = await withTaskGroup(
+            of: (page: Int, outcome: Result<[Element], any Error>).self,
+            returning: (Set<Element>, [PagedFetchResult<Element>.PageFailure]).self
+        ) { group in
             let maxConcurrentRequests = min(totalPages - 1, preferredMaxConcurrentRequests)
             let pages = 2...totalPages
 
@@ -178,38 +203,54 @@ extension Route where T: PagedObjectProtocol {
             }
             var indexIterator = indexStream.makeAsyncIterator()
             var results = resultSet
+            var failures: [PagedFetchResult<Element>.PageFailure] = []
+
+            func addFetchTask(forPage index: Int) {
+                group.addTask {
+                    do {
+                        return (index, .success(try await self.page(index).perform(retryLimit: retryLimit).object))
+                    } catch {
+                        return (index, .failure(error))
+                    }
+                }
+            }
 
             // Start with the initial batch of tasks
             for _ in 0..<maxConcurrentRequests {
                 if let index = await indexIterator.next() {
-                    group.addTask {
-                        (try? await self.page(index).perform())?.object ?? []
-                    }
+                    addFetchTask(forPage: index)
                 }
             }
 
             // Continue adding new tasks as others finish
-            while let result = await group.next() {
-                results.formUnion(result)  // Merge the `[Int]` result into `Set<Int>
+            while let (page, outcome) = await group.next() {
+                switch outcome {
+                case .success(let items):
+                    results.formUnion(items)
+                case .failure(let error):
+                    failures.append(.init(page: page, error: error))
+                }
                 if let index = await indexIterator.next() {
-                    group.addTask {
-                        (try? await self.page(index).perform())?.object ?? []
-                    }
+                    addFetchTask(forPage: index)
                 }
             }
 
-            return results
+            return (results, failures)
         }
+
+        failedPages.sort { $0.page < $1.page }
 
         // Defensive tail: if the server reported a higher itemCount than we
         // collected (e.g. headers and reality diverge), sequentially probe
         // additional pages until we hit one that's empty or no new items appear.
         // Caps at 10 extra pages so we never loop forever on a misbehaving server.
-        if let itemCount = firstPage.itemCount, resultSet.count < itemCount {
+        // Only runs on a fully successful fetch — with failed pages, the count
+        // shortfall is already explained and probing would just add noise.
+        if failedPages.isEmpty, let itemCount = firstPage.itemCount, resultSet.count < itemCount {
             var probePage = totalPages + 1
             let maxProbePages = 10
             for _ in 0..<maxProbePages {
-                guard let next = try? await self.page(probePage).perform() else { break }
+                guard let next = try? await self.page(probePage).perform(retryLimit: retryLimit) else { break }
                 if next.object.isEmpty { break }
                 let before = resultSet.count
                 resultSet.formUnion(next.object)
@@ -219,16 +260,22 @@ extension Route where T: PagedObjectProtocol {
             }
         }
 
-        return resultSet
+        return PagedFetchResult(items: resultSet, failedPages: failedPages, totalPages: totalPages)
     }
 
-    /// Stream paged results one at a time
-    public func pagedResults<Element>(maxConcurrentRequests preferredMaxConcurrentRequests: Int = 5) -> AsyncThrowingStream<[Element], Error> where T.Type == PagedObject<[Element]>.Type {
+    /// Stream paged results one at a time.
+    ///
+    /// `retryLimit` is forwarded to every page request — pass `0` to fail fast
+    /// instead of honoring `retry-after` waits.
+    public func pagedResults<Element>(
+        maxConcurrentRequests preferredMaxConcurrentRequests: Int = 5,
+        retryLimit: Int = 3
+    ) -> AsyncThrowingStream<[Element], Error> where T.Type == PagedObject<[Element]>.Type {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     // Fetch first page
-                    let firstPage = try await self.page(1).perform()
+                    let firstPage = try await self.page(1).perform(retryLimit: retryLimit)
                     continuation.yield(firstPage.object)
 
                     let totalPages = Self.effectivePageCount(from: firstPage)
@@ -248,7 +295,7 @@ extension Route where T: PagedObjectProtocol {
 
                             group.addTask {
                                 do {
-                                    let pageResult = try await self.page(pageIndex).perform().object
+                                    let pageResult = try await self.page(pageIndex).perform(retryLimit: retryLimit).object
                                     await semaphore.release()
                                     return (pageIndex, pageResult)
                                 } catch {

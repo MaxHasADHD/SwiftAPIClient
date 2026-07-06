@@ -54,8 +54,9 @@ struct PaginationTests {
             method: .GET,
             apiClient: makeClient(session)
         )
-        let all: Set<Int> = try await route.fetchAllPages()
-        #expect(all == [1, 2, 3, 4, 5, 6])
+        let result: PagedFetchResult<Int> = try await route.fetchAllPages()
+        #expect(result.items == [1, 2, 3, 4, 5, 6])
+        #expect(result.isComplete)
     }
 
     // MARK: - Limit downgrade
@@ -91,8 +92,9 @@ struct PaginationTests {
             apiClient: makeClient(session)
         ).limit(250)
 
-        let all: Set<Int> = try await route.fetchAllPages()
-        #expect(all.count == 350)
+        let result: PagedFetchResult<Int> = try await route.fetchAllPages()
+        #expect(result.items.count == 350)
+        #expect(result.isComplete)
     }
 
     /// Scenario where pageCount UNDERCOUNTS but itemCount tells the truth.
@@ -122,8 +124,8 @@ struct PaginationTests {
             apiClient: makeClient(session)
         ).limit(250)
 
-        let all: Set<Int> = try await route.fetchAllPages()
-        #expect(all.count == 350, "Should have collected all 350 items via itemCount/limit override, not the bad pageCount=2.")
+        let result: PagedFetchResult<Int> = try await route.fetchAllPages()
+        #expect(result.items.count == 350, "Should have collected all 350 items via itemCount/limit override, not the bad pageCount=2.")
     }
 
     /// Defensive tail: server reports itemCount=350, pageCount=3, limit=100, but the math
@@ -160,8 +162,9 @@ struct PaginationTests {
             apiClient: makeClient(session)
         )
 
-        let all: Set<Int> = try await route.fetchAllPages()
-        #expect(all.count == 350)
+        let result: PagedFetchResult<Int> = try await route.fetchAllPages()
+        #expect(result.items.count == 350)
+        #expect(result.isComplete)
     }
 
     /// Single page response — no additional fetches.
@@ -176,7 +179,99 @@ struct PaginationTests {
             method: .GET,
             apiClient: makeClient(session)
         )
-        let all: Set<Int> = try await route.fetchAllPages()
-        #expect(all == [1, 2, 3])
+        let result: PagedFetchResult<Int> = try await route.fetchAllPages()
+        #expect(result.items == [1, 2, 3])
+        #expect(result.totalPages == 1)
+    }
+
+    // MARK: - Failure semantics
+
+    /// A page failing mid-fetch must not silently truncate the data set: the
+    /// successful pages are returned, and the failed page is reported.
+    @Test("Failed page is reported alongside partial results")
+    func partialResultReportsFailedPages() async throws {
+        let session = MockSession()
+        try await mock(session, url: "https://api.example.com/items?page=1", items: [1, 2],
+                       headers: [.contentType, .page(1), .pageCount(3)])
+        try await mock(session, url: "https://api.example.com/items?page=2", items: [3, 4],
+                       headers: [.contentType, .page(2), .pageCount(3)])
+        // Page 3 blows up with a 500.
+        let failingPage = try RequestMocking.MockedResponse(
+            urlString: "https://api.example.com/items?page=3",
+            result: .success(Data()),
+            httpCode: 500
+        )
+        await session.add(mock: failingPage)
+
+        let route = Route<PagedObject<[Int]>>(
+            path: "items",
+            method: .GET,
+            apiClient: makeClient(session)
+        )
+        let result: PagedFetchResult<Int> = try await route.fetchAllPages()
+
+        #expect(result.items == [1, 2, 3, 4])
+        #expect(result.isComplete == false)
+        #expect(result.totalPages == 3)
+        #expect(result.failedPages.map(\.page) == [3])
+        #expect(result.failedPages.first?.error as? APIError == .serverError)
+    }
+
+    /// If the first page fails there is nothing partial to return — the whole
+    /// call throws.
+    @Test("First page failure throws instead of returning an empty partial result")
+    func firstPageFailureThrows() async throws {
+        let session = MockSession()
+        let failingPage = try RequestMocking.MockedResponse(
+            urlString: "https://api.example.com/items?page=1",
+            result: .success(Data()),
+            httpCode: 500
+        )
+        await session.add(mock: failingPage)
+
+        let route = Route<PagedObject<[Int]>>(
+            path: "items",
+            method: .GET,
+            apiClient: makeClient(session)
+        )
+
+        await #expect(throws: APIError.serverError) {
+            let _: PagedFetchResult<Int> = try await route.fetchAllPages()
+        }
+    }
+
+    /// `retryLimit: 0` must reach each page request, so a rate-limited page
+    /// fails immediately instead of sleeping out the server's `retry-after`
+    /// (Trakt's is 5 minutes). If the limit weren't forwarded, this test would
+    /// sit in the retry sleep and trip the time limit.
+    @Test("retryLimit is forwarded to page requests for fail-fast rate limiting", .timeLimit(.minutes(1)))
+    func retryLimitZeroFailsFastOnRateLimit() async throws {
+        let session = MockSession()
+        try await mock(session, url: "https://api.example.com/items?page=1", items: [1, 2],
+                       headers: [.contentType, .page(1), .pageCount(2)])
+        // Page 2 is rate-limited with a 5-minute cooldown.
+        let rateLimited = try RequestMocking.MockedResponse(
+            urlString: "https://api.example.com/items?page=2",
+            result: .success(Data()),
+            httpCode: 429,
+            headers: [.retry(300)]
+        )
+        await session.add(mock: rateLimited)
+
+        let route = Route<PagedObject<[Int]>>(
+            path: "items",
+            method: .GET,
+            apiClient: makeClient(session)
+        )
+        let result: PagedFetchResult<Int> = try await route.fetchAllPages(retryLimit: 0)
+
+        #expect(result.items == [1, 2])
+        #expect(result.isComplete == false)
+        #expect(result.failedPages.map(\.page) == [2])
+        if case .retry(let after)? = result.failedPages.first?.error as? APIError {
+            #expect(after == 300)
+        } else {
+            Issue.record("Expected APIError.retry(after: 300), got \(String(describing: result.failedPages.first?.error))")
+        }
     }
 }

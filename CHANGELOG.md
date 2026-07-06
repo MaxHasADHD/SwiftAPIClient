@@ -15,7 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added (auth lifecycle)
 - `AuthCoordinator.ensureLoaded()` — populates the cache from storage on first call, no-op afterwards. `mutableRequest` awaits it before attaching an Authorization header, so authorized requests built before an explicit `loadCurrentState()` still find stored credentials. Startup ordering no longer affects correctness.
 
+### Added (pagination)
+- `PagedFetchResult<Element>` — the new return type of `fetchAllPages`, carrying `items`, `failedPages` (page number + error for each page that failed), `totalPages`, and `isComplete`.
+- `retryLimit` parameter on `fetchAllPages` and `pagedResults`, forwarded to every page request. Pass `0` to fail fast against APIs with long rate-limit cooldowns (e.g. Trakt's 5-minute wait) instead of sleeping through `retry-after`.
+
 ### Changed
+- **BREAKING**: `Route.fetchAllPages` returns `PagedFetchResult<Element>` instead of `Set<Element>`, and no longer swallows page failures. Previously a failed page silently yielded an incomplete `Set` that was indistinguishable from a complete one. Now: a first-page failure throws (nothing was fetched); a later-page failure returns the partial `items` with the missing pages listed in `failedPages`. The defensive tail probe only runs on fully successful fetches, since a count shortfall is otherwise already explained.
 - **BREAKING**: `APIClient.mutableRequest(forPath:withQuery:isAuthorized:withHTTPMethod:body:)` is now `async` so it can wait for the coordinator's first storage load. Call sites add `await`.
 - Proactive token refresh moved from `perform` into `fetchData`, so `EmptyRoute` and direct `fetchData` callers refresh an expiring token before sending instead of paying a 401 round trip first.
 - **BREAKING**: `APIAuthentication.getCurrentState()` is now non-throwing and returns `AuthenticationState?`. Implementations must return whatever credentials exist — even expired ones — and return `nil` only when nothing is stored.
