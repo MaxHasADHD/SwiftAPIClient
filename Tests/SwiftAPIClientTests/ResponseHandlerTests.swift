@@ -166,6 +166,78 @@ struct DefaultResponseHandlerTests {
         }
     }
     
+    @Test("Throws retry with delay for 429 with canonically cased Retry-After header")
+    func rateLimitWithCanonicallyCasedRetryAfter() throws {
+        // RFC 9110 header names are case-insensitive, and real servers (Trakt among
+        // them) send the canonical `Retry-After` casing. Reading `allHeaderFields`
+        // with a hardcoded lowercase key misses it and drops the automatic retry.
+        let url = URL(string: "https://api.example.com/test")!
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 429,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Retry-After": "45"]
+        )
+
+        do {
+            try handler.handleResponse(response)
+            Issue.record("Expected retry error to be thrown")
+        } catch let error as APIError {
+            guard case .retry(let delay) = error else {
+                Issue.record("Expected .retry error, got \(error)")
+                return
+            }
+            #expect(delay == 45.0)
+        }
+    }
+
+    @Test("Throws retry with delay for 429 with lowercase retry-after header")
+    func rateLimitWithLowercaseRetryAfter() throws {
+        // HTTP/2 and HTTP/3 mandate lowercase field names on the wire, so this
+        // form has to keep working — the shared mock now sends canonical casing,
+        // and nothing else covers it.
+        let url = URL(string: "https://api.example.com/test")!
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 429,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["retry-after": "20"]
+        )
+
+        do {
+            try handler.handleResponse(response)
+            Issue.record("Expected retry error to be thrown")
+        } catch let error as APIError {
+            guard case .retry(let delay) = error else {
+                Issue.record("Expected .retry error, got \(error)")
+                return
+            }
+            #expect(delay == 20.0)
+        }
+    }
+
+    @Test("Throws retry with delay for 429 with arbitrarily cased retry-after header")
+    func rateLimitWithMixedCaseRetryAfter() throws {
+        let url = URL(string: "https://api.example.com/test")!
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 429,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["RETRY-AFTER": "15"]
+        )
+
+        do {
+            try handler.handleResponse(response)
+            Issue.record("Expected retry error to be thrown")
+        } catch let error as APIError {
+            guard case .retry(let delay) = error else {
+                Issue.record("Expected .retry error, got \(error)")
+                return
+            }
+            #expect(delay == 15.0)
+        }
+    }
+
     @Test("Throws rateLimitExceeded for 429 without retry-after header")
     func rateLimitWithoutRetryAfter() throws {
         let url = URL(string: "https://api.example.com/test")!

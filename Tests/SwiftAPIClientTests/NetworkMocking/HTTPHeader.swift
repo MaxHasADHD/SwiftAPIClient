@@ -31,7 +31,8 @@ public enum HTTPHeader {
         case .itemCount:
             "X-Pagination-Item-Count"
         case .retry:
-            "retry-after"
+            // Canonical casing, matching what real servers send.
+            "Retry-After"
         }
     }
 

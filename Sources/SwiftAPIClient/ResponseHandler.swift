@@ -62,12 +62,11 @@ public struct DefaultResponseHandler: ResponseHandler {
         case 412: throw APIError.preconditionFailed
         case 422: throw APIError.unprocessableEntity
         case 429:
-            // Handle retry-after header
-            let rawRetryAfter = httpResponse.allHeaderFields["retry-after"]
-            if let retryAfterString = rawRetryAfter as? String,
-               let retryAfter = TimeInterval(retryAfterString) {
-                throw APIError.retry(after: retryAfter)
-            } else if let retryAfter = rawRetryAfter as? TimeInterval {
+            // `allHeaderFields` does no case folding; `value(forHTTPHeaderField:)` does.
+            // Delta-seconds only — RFC 9110 also permits an HTTP-date, which falls
+            // through to `.rateLimitExceeded`.
+            if let retryAfterString = httpResponse.value(forHTTPHeaderField: "Retry-After"),
+               let retryAfter = TimeInterval(retryAfterString.trimmingCharacters(in: .whitespaces)) {
                 throw APIError.retry(after: retryAfter)
             } else {
                 throw APIError.rateLimitExceeded(httpResponse)

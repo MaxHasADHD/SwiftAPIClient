@@ -5,6 +5,30 @@ All notable changes to SwiftAPIClient will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.1]
+
+### Fixed
+- **`Retry-After` is honored again.** `DefaultResponseHandler` looked the header up as
+  `allHeaderFields["retry-after"]`. `allHeaderFields` is a plain dictionary that preserves whatever
+  casing CFNetwork stored — it does no case folding — so the canonical `Retry-After` servers send was
+  missed, and 429s surfaced as `.rateLimitExceeded` instead of `.retry(after:)`. Since `fetchData`
+  only retries `.retry(after:)`, its automatic backoff never ran. This regressed when the client was
+  extracted from TraktKit, which had used the correct `allHeaderFields["Retry-After"]`. The lookup
+  now uses `HTTPURLResponse.value(forHTTPHeaderField:)`, which matches case-insensitively per
+  RFC 9110.
+
+  Note: only the delta-seconds form is understood. RFC 9110 also permits an HTTP-date, which still
+  falls through to `.rateLimitExceeded`.
+
+### Added
+- **Error response bodies are logged.** `fetchData` now logs the body of any response its
+  `ResponseHandler` rejects, then rethrows unchanged. The body was previously unreachable —
+  `handleResponse` receives only the `URLResponse`, and `perform` throws before it can decode
+  `data` — so an API's explanation of *why* it refused a request was impossible to see, including in
+  logs collected from users. Logged verbatim (truncated to 1KB) rather than parsed, so no error is
+  dropped for having an unexpected body shape. Marked `.public` so it survives into exported logs;
+  these are API error payloads, not user content.
+
 ## [1.7.0]
 
 ### Added

@@ -222,6 +222,28 @@ open class APIClient: @unchecked Sendable {
         try configuration.responseHandler.handleResponse(response)
     }
 
+    private static let errorBodyLogLimit = 1024
+
+    /// Logs why a request was rejected. Marked `.public` because these are API error
+    /// payloads, not user content, and OSLog would otherwise redact them out of an
+    /// exported log — where they are needed.
+    private func logErrorBody(_ data: Data, for request: URLRequest, response: URLResponse?) {
+        guard !data.isEmpty else { return }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let path = request.url?.path ?? "?"
+
+        guard var body = String(data: data.prefix(Self.errorBodyLogLimit), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !body.isEmpty
+        else {
+            Self.logger.error("HTTP \(status, privacy: .public) \(path, privacy: .public): \(data.count, privacy: .public)-byte non-text error body")
+            return
+        }
+        if data.count > Self.errorBodyLogLimit { body += "… (truncated)" }
+
+        Self.logger.error("HTTP \(status, privacy: .public) \(path, privacy: .public): \(body, privacy: .public)")
+    }
+
     // MARK: - Perform Requests
 
     /**
@@ -255,7 +277,14 @@ open class APIClient: @unchecked Sendable {
         while true {
             do {
                 let (data, response) = try await session.data(for: currentRequest)
-                try handleResponse(response: response)
+                do {
+                    try handleResponse(response: response)
+                } catch {
+                    // Otherwise unreachable: `handleResponse` sees only the
+                    // `URLResponse`, and `perform` throws here before decoding `data`.
+                    logErrorBody(data, for: currentRequest, response: response)
+                    throw error
+                }
                 return (data, response)
             } catch let error as APIError {
                 // Handle APIError retry logic
