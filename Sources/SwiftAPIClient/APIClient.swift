@@ -156,15 +156,19 @@ open class APIClient: @unchecked Sendable {
     /// request built early in the app's lifetime still finds stored
     /// credentials. Throws `APIClientError.userNotAuthorized` only when no
     /// credentials exist at all (never authenticated, or signed out).
+    ///
+    /// `baseURL` replaces the configuration's for this request only, for an API
+    /// that serves some endpoints from another host. Headers are unchanged.
     public func mutableRequest(
         forPath path: String,
+        baseURL: URL? = nil,
         withQuery query: [String: String] = [:],
         isAuthorized authorized: Bool,
         withHTTPMethod httpMethod: Method,
         body: Encodable? = nil
     ) async throws -> URLRequest {
         // Build URL
-        guard var components = URLComponents(url: configuration.baseURL, resolvingAgainstBaseURL: false) else {
+        guard var components = URLComponents(url: baseURL ?? configuration.baseURL, resolvingAgainstBaseURL: false) else {
             throw APIClientError.malformedURL
         }
 

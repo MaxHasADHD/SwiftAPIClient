@@ -17,6 +17,9 @@ public struct EmptyRoute: Sendable {
 
     public var body: (any Encodable & Hashable & Sendable)?
 
+    /// Replaces the client's base URL for this route. See `APIClient.mutableRequest`.
+    public var baseURL: URL?
+
     // MARK: - Lifecycle
 
     public init(
@@ -25,6 +28,7 @@ public struct EmptyRoute: Sendable {
         body: (any Encodable & Hashable & Sendable)? = nil,
         method: Method,
         requiresAuthentication: Bool = false,
+        baseURL: URL? = nil,
         apiClient: APIClient
     ) {
         self.path = path
@@ -32,6 +36,7 @@ public struct EmptyRoute: Sendable {
         self.body = body
         self.method = method
         self.requiresAuthentication = requiresAuthentication
+        self.baseURL = baseURL
         self.apiClient = apiClient
     }
 
@@ -41,6 +46,7 @@ public struct EmptyRoute: Sendable {
         body: (any Encodable & Hashable & Sendable)? = nil,
         method: Method,
         requiresAuthentication: Bool = false,
+        baseURL: URL? = nil,
         apiClient: APIClient
     ) {
         self.path = paths.compactMap { $0?.description }.joined(separator: "/")
@@ -48,6 +54,7 @@ public struct EmptyRoute: Sendable {
         self.body = body
         self.method = method
         self.requiresAuthentication = requiresAuthentication
+        self.baseURL = baseURL
         self.apiClient = apiClient
     }
 
@@ -56,6 +63,7 @@ public struct EmptyRoute: Sendable {
     public func perform(retryLimit: Int = 3) async throws {
         let request = try await apiClient.mutableRequest(
             forPath: path,
+            baseURL: baseURL,
             withQuery: queryItems,
             isAuthorized: requiresAuthentication,
             withHTTPMethod: method,

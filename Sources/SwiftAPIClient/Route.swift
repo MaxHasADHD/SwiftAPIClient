@@ -22,6 +22,9 @@ public struct Route<T: Codable & Hashable & Sendable>: Sendable {
 
     public var body: (any Encodable & Hashable & Sendable)?
 
+    /// Replaces the client's base URL for this route. See `APIClient.mutableRequest`.
+    public var baseURL: URL?
+
     // MARK: - Lifecycle
 
     public init(
@@ -31,6 +34,7 @@ public struct Route<T: Codable & Hashable & Sendable>: Sendable {
         method: Method,
         requiresAuthentication: Bool = false,
         resultType: T.Type = T.self,
+        baseURL: URL? = nil,
         apiClient: APIClient
     ) {
         self.path = path
@@ -38,6 +42,7 @@ public struct Route<T: Codable & Hashable & Sendable>: Sendable {
         self.body = body
         self.method = method
         self.requiresAuthentication = requiresAuthentication
+        self.baseURL = baseURL
         self.resultType = resultType
         self.apiClient = apiClient
     }
@@ -49,6 +54,7 @@ public struct Route<T: Codable & Hashable & Sendable>: Sendable {
         method: Method,
         requiresAuthentication: Bool = false,
         resultType: T.Type = T.self,
+        baseURL: URL? = nil,
         apiClient: APIClient
     ) {
         self.path = paths.compactMap { $0?.description }.joined(separator: "/")
@@ -56,6 +62,7 @@ public struct Route<T: Codable & Hashable & Sendable>: Sendable {
         self.body = body
         self.method = method
         self.requiresAuthentication = requiresAuthentication
+        self.baseURL = baseURL
         self.resultType = resultType
         self.apiClient = apiClient
     }
@@ -95,6 +102,7 @@ public struct Route<T: Codable & Hashable & Sendable>: Sendable {
 
         return try await apiClient.mutableRequest(
             forPath: path,
+            baseURL: baseURL,
             withQuery: query,
             isAuthorized: requiresAuthentication,
             withHTTPMethod: method,
